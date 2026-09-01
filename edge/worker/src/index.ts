@@ -94,7 +94,8 @@ function forbidden(message: string): Response {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const store: Store = createStore(env.SHIELD_KV);
+    try {
+      const store: Store = createStore(env.SHIELD_KV);
     const aggressive = env.AGGRESSIVE_MODE === 'true';
 
     const limiter = new RateLimiter(store);
@@ -162,9 +163,29 @@ export default {
       return destroyed;
     }
 
-    // 6. Origin fetch.
+    // 6. Origin fetch — fallback to landing page if origin unreachable (prevents 1101).
     const originBase = env.ORIGIN_URL ?? 'http://127.0.0.1:3000';
+    const isPlaceholder = originBase.includes('your-origin.example.com') || originBase.includes('127.0.0.1');
+    if (isPlaceholder && url.pathname === '/') {
+      return new Response(
+        `<!doctype html><html><head><meta charset="utf-8"><title>fox-shield — live</title><style>body{font-family:system-ui;background:#0b0e14;color:#e5e7eb;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0} .c{background:#1f2937;border:1px solid #2d3748;border-radius:12px;padding:32px;max-width:520px;text-align:center} a{color:#f6821f}</style></head><body><div class="c"><h1>🦊 fox-shield — Edge Live</h1><p>Worker çalışıyor. Dashboard: <a href="https://be9263d0.fox-shield.pages.dev">be9263d0.fox-shield.pages.dev</a></p><p>Challenge: <a href="/__shield/challenge">/__shield/challenge</a></p><p style="color:#9aa3b2;font-size:13px">ORIGIN_URL ayarla → Worker origin'e proxy'ler. Şu an placeholder.</p></div></body></html>`,
+        { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } },
+      );
+    }
     const originRequest = buildOriginRequest(request, originBase, url.pathname, url.search, body);
-    return fetch(originRequest);
+      try {
+        return await fetch(originRequest);
+      } catch (e) {
+        return new Response(`Origin unreachable: ${String(e)}`, {
+          status: 502,
+          headers: { 'content-type': 'text/plain; charset=utf-8' },
+        });
+      }
+    } catch (e) {
+      return new Response(`Worker error: ${String(e)}\n${(e as Error)?.stack ?? ''}`, {
+        status: 500,
+        headers: { 'content-type': 'text/plain; charset=utf-8' },
+      });
+    }
   },
 };

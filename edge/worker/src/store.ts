@@ -67,7 +67,8 @@ export class KVStore implements Store {
 
   async set(key: string, value: string, ttlSeconds?: number): Promise<void> {
     if (ttlSeconds && ttlSeconds > 0) {
-      await this.kv.put(key, value, { expirationTtl: ttlSeconds });
+      const ttl = Math.max(60, ttlSeconds);
+      await this.kv.put(key, value, { expirationTtl: ttl });
     } else {
       await this.kv.put(key, value);
     }
