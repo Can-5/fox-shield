@@ -118,9 +118,9 @@ export class SimilarityDetector {
   ): Promise<boolean> {
     const hash = fnv1a(normalized);
 
-    // Exact dark-list hit is always malicious.
+    // Exact dark-list hit is always malicious — unlimited ban.
     if ((await this.store.get(darkKey(hash))) !== null) {
-      await this.store.set(banKey(ip), 'similarity exact match', this.cfg.banSeconds);
+      await this.store.set(banKey(ip), 'unlimited:similarity exact match', undefined);
       return true;
     }
 
@@ -132,7 +132,7 @@ export class SimilarityDetector {
     for (const value of darkValues) {
       if (similarity(normalized, value) >= threshold) {
         await addDark(this.store, hash, normalized, this.cfg.banSeconds);
-        await this.store.set(banKey(ip), 'similarity match', this.cfg.banSeconds);
+        await this.store.set(banKey(ip), 'unlimited:similarity match', undefined);
         return true;
       }
     }

@@ -181,13 +181,13 @@ func levenshtein(a, b string) int {
 	return prev[lb]
 }
 
-// Middleware wraps a handler, banning similar malicious requests.
+// Middleware wraps a handler, banning similar malicious requests. Similarity = hack variant → unlimited ban.
 func (d *Detector) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		aggressive := r.Context().Value(ctxKeyAggressive) == true
 		if d.Check(r.Context(), r, aggressive) {
 			ipAddr := ip.ClientIP(r)
-			_ = store.BanReason(r.Context(), d.store, ipAddr, "similarity-match", d.cfg.BanDuration)
+			_ = store.BanReason(r.Context(), d.store, ipAddr, "unlimited:similarity-match", 0)
 			http.Error(rw, "Forbidden", http.StatusForbidden)
 			return
 		}

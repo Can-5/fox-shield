@@ -151,17 +151,19 @@ func headerHaystack(r *http.Request) string {
 }
 
 // Middleware wraps a handler. On a signature match or an oversized body it
-// bans the client IP and returns 403.
+// bans the client IP and returns 403. Hack attempts (any WAF signature) get unlimited ban.
 func (w *WAF) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		res := w.Match(r)
 		if res.ID != "" || res.OversizedBody {
 			ipAddr := ip.ClientIP(r)
 			reason := "waf:oversized-body"
+			banDur := 60 * time.Minute
 			if res.ID != "" {
-				reason = "waf:" + res.ID + ":" + res.Category
+				reason = "unlimited:waf:" + res.ID + ":" + res.Category
+				banDur = 0
 			}
-			_ = store.BanReason(r.Context(), w.store, ipAddr, reason, 60*time.Minute)
+			_ = store.BanReason(r.Context(), w.store, ipAddr, reason, banDur)
 			http.Error(rw, "Forbidden", http.StatusForbidden)
 			return
 		}

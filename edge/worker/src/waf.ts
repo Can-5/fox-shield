@@ -140,6 +140,8 @@ export class Waf {
   async block(ip: string, hash: string, normalized: string, match: WafMatch): Promise<void> {
     await addDark(this.store, hash, normalized, 60 * 60);
     const reason = match.id ? `waf:${match.id}:${match.category}` : 'waf:oversized-body';
-    await this.store.set(banKey(ip), reason, 60 * 60);
+    const isHack = match.category === 'sqli' || match.category === 'rce' || match.category === 'traversal' || match.category === 'xss' || match.id !== '';
+    // Direkt hack denemesi → unlimited ban (KV'de kalıcı, TTL yok)
+    await this.store.set(banKey(ip), `unlimited:${reason}`, isHack ? undefined : 60 * 60);
   }
 }
