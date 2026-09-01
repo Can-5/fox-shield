@@ -8,6 +8,12 @@
  * allowed through. If the proof is invalid the client is served a CAPTCHA
  * placeholder (a simple math challenge) as a fallback.
  *
+ * Security: the pass cookie value is a random 32-byte token stored in KV with
+ * a TTL, so a static or guessed cookie is rejected. The proof nonce is bound
+ * to the client IP, stored server-side, and deleted after a single use to
+ * prevent replay and fixation. The CAPTCHA answer is stored server-side keyed
+ * by the nonce rather than embedded in the HTML.
+ *
  * Mirrors internal/challenge/challenge.go.
  */
 
@@ -17,12 +23,14 @@ export interface ChallengeConfig {
   difficultyNormal: number;
   difficultyAggressive: number;
   passTtlSeconds: number;
+  nonceTtlSeconds: number;
 }
 
 export const DEFAULT_CHALLENGE_CONFIG: ChallengeConfig = {
   difficultyNormal: 4,
   difficultyAggressive: 5,
   passTtlSeconds: 10 * 60,
+  nonceTtlSeconds: 2 * 60,
 };
 
 export const CHALLENGE_COOKIE = '__shield_pass';
@@ -48,6 +56,21 @@ export async function validProof(nonce: string, proof: string, difficulty: numbe
   }
   const hex = await sha256Hex(nonce + proof);
   return hex.startsWith('0'.repeat(difficulty));
+}
+
+/** Store key for a pass token. */
+export function passKey(token: string): string {
+  return `pass:${token}`;
+}
+
+/** Store key for a proof nonce (value = client IP). */
+export function nonceKey(nonce: string): string {
+  return `nonce:${nonce}`;
+}
+
+/** Store key for a CAPTCHA answer (value = expected answer). */
+export function captchaKey(nonce: string): string {
+  return `captcha:${nonce}`;
 }
 
 /** Builds the challenge HTML page with embedded proof-of-work JavaScript. */
@@ -116,10 +139,7 @@ export function challengeHtml(nonce: string, difficulty: number, ip: string): st
 }
 
 /** Builds the CAPTCHA placeholder page (simple math challenge). */
-export function captchaHtml(ip: string): string {
-  const a = Math.floor(Math.random() * 9) + 1;
-  const b = Math.floor(Math.random() * 9) + 1;
-  const answer = a + b;
+export function captchaHtml(nonce: string, ip: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -138,9 +158,9 @@ export function captchaHtml(ip: string): string {
 <body>
   <div class="card">
     <h1>Human verification</h1>
-    <p>Please solve: ${a} + ${b} = ?</p>
+    <p>Please solve the math problem shown below.</p>
     <form method="POST" action="/__shield/challenge">
-      <input type="hidden" name="captcha" value="${answer}">
+      <input type="hidden" name="nonce" value="${nonce}">
       <input type="hidden" name="ip" value="${ip}">
       <input type="number" name="answer" required autofocus placeholder="Your answer">
       <button type="submit">Verify</button>
@@ -152,8 +172,10 @@ export function captchaHtml(ip: string): string {
 
 export class Challenge {
   private readonly cfg: ChallengeConfig;
+  private readonly store: Store;
 
-  constructor(cfg: ChallengeConfig = DEFAULT_CHALLENGE_CONFIG) {
+  constructor(store: Store, cfg: ChallengeConfig = DEFAULT_CHALLENGE_CONFIG) {
+    this.store = store;
     this.cfg = cfg;
   }
 
@@ -162,8 +184,10 @@ export class Challenge {
   }
 
   /** Serves the challenge page for a GET request. */
-  serve(ip: string, aggressive: boolean): Response {
+  async serve(ip: string, aggressive: boolean): Promise<Response> {
     const nonce = randomHex(16);
+    // Bind the nonce to the client IP, stored server-side with a TTL.
+    await this.store.set(nonceKey(nonce), ip, this.cfg.nonceTtlSeconds);
     const html = challengeHtml(nonce, this.difficulty(aggressive), ip);
     return new Response(html, {
       status: 200,
@@ -192,34 +216,110 @@ export class Challenge {
       } catch {
         return new Response('Bad Request', { status: 400 });
       }
-      if (await validProof(nonce, proof, this.difficulty(aggressive))) {
-        return this.passResponse();
+      if (await this.validProof(nonce, proof, this.difficulty(aggressive), ip)) {
+        return this.passResponse(ip);
       }
       // Proof failed -> CAPTCHA placeholder fallback.
-      return new Response(captchaHtml(ip), {
-        status: 403,
-        headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
-      });
+      return this.captchaResponse(ip);
     }
 
     // Form-encoded CAPTCHA submission.
     const form = await request.formData();
-    const expected = form.get('captcha');
+    const nonce = form.get('nonce');
     const answer = form.get('answer');
-    if (typeof expected === 'string' && typeof answer === 'string' && expected === answer) {
-      return this.passResponse();
+    if (typeof nonce === 'string' && typeof answer === 'string' && (await this.validCaptcha(nonce, answer, ip))) {
+      return this.passResponse(ip);
     }
-    return new Response(captchaHtml(ip), {
+    return this.captchaResponse(ip);
+  }
+
+  /**
+   * Validates a proof-of-work submission. The nonce must have been issued for
+   * this client IP and is deleted after a single use to prevent replay.
+   */
+  private async validProof(nonce: string, proof: string, difficulty: number, ip: string): Promise<boolean> {
+    if (nonce === '' || proof === '') {
+      return false;
+    }
+    const boundIp = await this.store.get(nonceKey(nonce));
+    // Delete the nonce immediately (one-time use) regardless of proof result.
+    await this.store.delete(nonceKey(nonce));
+    if (boundIp !== ip) {
+      return false;
+    }
+    return validProof(nonce, proof, difficulty);
+  }
+
+  /**
+   * Validates a CAPTCHA answer. The expected answer is stored server-side
+   * keyed by the nonce and deleted after a single use.
+   */
+  private async validCaptcha(nonce: string, answer: string, ip: string): Promise<boolean> {
+    if (nonce === '' || answer === '') {
+      return false;
+    }
+    const boundIp = await this.store.get(nonceKey(nonce));
+    const expected = await this.store.get(captchaKey(nonce));
+    // Delete both keys immediately (one-time use).
+    await this.store.delete(nonceKey(nonce));
+    await this.store.delete(captchaKey(nonce));
+    if (boundIp !== ip || expected === null) {
+      return false;
+    }
+    return expected === answer;
+  }
+
+  /** Serves the CAPTCHA placeholder, storing the answer server-side. */
+  private async captchaResponse(ip: string): Promise<Response> {
+    const nonce = randomHex(16);
+    const a = Math.floor(Math.random() * 9) + 1;
+    const b = Math.floor(Math.random() * 9) + 1;
+    const answer = String(a + b);
+    await this.store.set(nonceKey(nonce), ip, this.cfg.nonceTtlSeconds);
+    await this.store.set(captchaKey(nonce), answer, this.cfg.nonceTtlSeconds);
+    return new Response(captchaHtml(nonce, ip), {
       status: 403,
       headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
     });
   }
 
-  private passResponse(): Response {
-    const cookie = `${CHALLENGE_COOKIE}=1; Path=/; Max-Age=${this.cfg.passTtlSeconds}; HttpOnly; SameSite=Lax`;
+  /** Issues a random pass token, stores it, and sets the __shield_pass cookie. */
+  private async passResponse(ip: string): Promise<Response> {
+    const token = randomHex(32);
+    await this.store.set(passKey(token), ip, this.cfg.passTtlSeconds);
+    const cookie = `${CHALLENGE_COOKIE}=${token}; Path=/; Max-Age=${this.cfg.passTtlSeconds}; HttpOnly; SameSite=Lax`;
     return new Response('ok', {
       status: 200,
       headers: { 'set-cookie': cookie, 'cache-control': 'no-store' },
     });
   }
+
+  /** Reports whether the request carries a valid, issued pass cookie. */
+  async hasValidPass(request: Request, ip: string): Promise<boolean> {
+    const cookieHeader = request.headers.get('cookie');
+    if (!cookieHeader) {
+      return false;
+    }
+    const token = extractCookie(cookieHeader, CHALLENGE_COOKIE);
+    if (!token) {
+      return false;
+    }
+    const boundIp = await this.store.get(passKey(token));
+    return boundIp === ip;
+  }
+}
+
+/** Extracts a cookie value by name from a Cookie header. */
+export function extractCookie(header: string, name: string): string | null {
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) {
+      continue;
+    }
+    const key = part.slice(0, eq).trim();
+    if (key === name) {
+      return part.slice(eq + 1).trim();
+    }
+  }
+  return null;
 }

@@ -13,7 +13,7 @@ import {
   similarity,
   SimilarityDetector,
 } from '../src/similarity';
-import { MemoryStore, darkKey } from '../src/store';
+import { MemoryStore, addDark } from '../src/store';
 
 describe('fnv1a', () => {
   it('produces a stable 8-char hex hash', () => {
@@ -62,7 +62,7 @@ describe('SimilarityDetector', () => {
     const det = new SimilarityDetector(store);
     const norm = 'POST /api&token#deadbeef';
     const hash = fnv1a(norm);
-    await store.set(darkKey(hash), norm, 3600);
+    await addDark(store, hash, norm, 3600);
 
     const malicious = await det.check('1.2.3.4', norm, false);
     expect(malicious).toBe(true);
@@ -72,7 +72,7 @@ describe('SimilarityDetector', () => {
     const store = new MemoryStore();
     const det = new SimilarityDetector(store);
     const darkNorm = 'POST /api&token#aaaaaaaa';
-    await store.set(darkKey(fnv1a(darkNorm)), darkNorm, 3600);
+    await addDark(store, fnv1a(darkNorm), darkNorm, 3600);
 
     // Nearly identical request (one char differs in the body hash).
     const near = 'POST /api&token#aaaaaaab';
@@ -84,7 +84,7 @@ describe('SimilarityDetector', () => {
     const store = new MemoryStore();
     const det = new SimilarityDetector(store);
     const darkNorm = 'POST /api&token#aaaaaaaa';
-    await store.set(darkKey(fnv1a(darkNorm)), darkNorm, 3600);
+    await addDark(store, fnv1a(darkNorm), darkNorm, 3600);
 
     const different = 'GET /home&lang=en#bbbbbbbb';
     const malicious = await det.check('1.2.3.4', different, false);

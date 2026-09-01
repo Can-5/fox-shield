@@ -9,7 +9,7 @@
  */
 
 import type { Store } from './store';
-import { darkKey, banKey } from './store';
+import { banKey, addDark } from './store';
 
 export interface WafRule {
   id: string;
@@ -51,6 +51,38 @@ export const DEFAULT_WAF_RULES: WafRule[] = [
 export interface WafMatch {
   id: string;
   category: string;
+  /** True when the request body exceeded the scan cap and could not be fully inspected. */
+  oversizedBody: boolean;
+}
+
+// maxBodyBytes caps how much of the request body is scanned. Bodies larger
+// than this cannot be fully inspected and are treated as suspicious rather
+// than silently truncated (which would let a payload hide past the cap).
+const maxBodyBytes = 1 << 20; // 1 MiB
+
+// hopByHopHeaders are excluded from header scanning per RFC 7230 §6.1.
+const hopByHopHeaders = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+]);
+
+/** Joins relevant request headers (lowercased name:value) into a scan string. */
+function headerHaystack(headers: Headers): string {
+  const parts: string[] = [];
+  headers.forEach((value, name) => {
+    const lower = name.toLowerCase();
+    if (hopByHopHeaders.has(lower)) {
+      return;
+    }
+    parts.push(`${lower}:${value}`);
+  });
+  return parts.join('\n');
 }
 
 export class Waf {
@@ -63,12 +95,21 @@ export class Waf {
   }
 
   /**
-   * Scans the request target and body for any signature. Returns the first
-   * matching rule, or null when clean.
+   * Scans the request target, headers and body for any signature. Returns the
+   * first matching rule, or a result with empty id/category when the body was
+   * oversized (treated as suspicious), or null when clean.
    */
-  match(method: string, pathname: string, search: string, body: string): WafMatch | null {
+  match(
+    method: string,
+    pathname: string,
+    search: string,
+    body: string,
+    headers?: Headers,
+    oversizedBody = false,
+  ): WafMatch | null {
     const target = `${method} ${pathname}${search}`;
-    const haystack = `${target}\n${body}`;
+    const headerStr = headers ? headerHaystack(headers) : '';
+    const haystack = `${target}\n${headerStr}\n${body}`;
     for (const rule of this.rules) {
       try {
         // Go/PCRE inline (?i) flag is not valid in JS; translate to the `i` flag.
@@ -79,12 +120,15 @@ export class Waf {
           flags = 'i';
         }
         if (new RegExp(pattern, flags).test(haystack)) {
-          return { id: rule.id, category: rule.category };
+          return { id: rule.id, category: rule.category, oversizedBody };
         }
       } catch {
         // A malformed rule must never crash the worker; skip it.
         continue;
       }
+    }
+    if (oversizedBody) {
+      return { id: '', category: 'oversized-body', oversizedBody: true };
     }
     return null;
   }
@@ -94,7 +138,8 @@ export class Waf {
    * match so the caller can log it.
    */
   async block(ip: string, hash: string, normalized: string, match: WafMatch): Promise<void> {
-    await this.store.set(darkKey(hash), normalized, 60 * 60);
-    await this.store.set(banKey(ip), `waf:${match.id}:${match.category}`, 60 * 60);
+    await addDark(this.store, hash, normalized, 60 * 60);
+    const reason = match.id ? `waf:${match.id}:${match.category}` : 'waf:oversized-body';
+    await this.store.set(banKey(ip), reason, 60 * 60);
   }
 }

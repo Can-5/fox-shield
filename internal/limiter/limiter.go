@@ -8,11 +8,13 @@
 package limiter
 
 import (
+	"container/list"
 	"context"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/foxai/fox-shield/internal/ip"
 	"github.com/foxai/fox-shield/internal/store"
 )
 
@@ -50,23 +52,30 @@ func DefaultConfig() Config {
 	}
 }
 
+// maxBuckets caps the number of in-memory rate-limit buckets to prevent
+// memory exhaustion from an attacker rotating many distinct IPs. When the cap
+// is reached the least-recently-used bucket is evicted.
+const maxBuckets = 100_000
+
 // Limiter enforces per-IP rate limits.
 type Limiter struct {
 	cfg    Config
 	store  store.Store
 	mu     sync.Mutex
-	buckets map[string]*bucket
+	buckets map[string]*list.Element
+	lru    *list.List // front = most recently used
 }
 
 type bucket struct {
-	tokens   float64
-	last     time.Time
+	ip         string
+	tokens     float64
+	last       time.Time
 	violations int
 }
 
 // New creates a Limiter backed by the given store.
 func New(cfg Config, s store.Store) *Limiter {
-	return &Limiter{cfg: cfg, store: s, buckets: make(map[string]*bucket)}
+	return &Limiter{cfg: cfg, store: s, buckets: make(map[string]*list.Element), lru: list.New()}
 }
 
 // Allow reports whether the request from ip is within budget. If it returns
@@ -85,11 +94,24 @@ func (l *Limiter) Allow(ctx context.Context, ip string, aggressive bool) (ok boo
 
 	now := time.Now()
 	l.mu.Lock()
-	b, exists := l.buckets[ip]
+	el, exists := l.buckets[ip]
 	if !exists {
-		b = &bucket{tokens: float64(burst), last: now}
-		l.buckets[ip] = b
+		b := &bucket{ip: ip, tokens: float64(burst), last: now}
+		el = l.lru.PushFront(b)
+		l.buckets[ip] = el
+		// Evict the least-recently-used bucket when the cap is exceeded.
+		if l.lru.Len() > maxBuckets {
+			oldest := l.lru.Back()
+			if oldest != nil {
+				ob := oldest.Value.(*bucket)
+				delete(l.buckets, ob.ip)
+				l.lru.Remove(oldest)
+			}
+		}
+	} else {
+		l.lru.MoveToFront(el)
 	}
+	b := el.Value.(*bucket)
 	// Refill tokens based on elapsed time.
 	elapsed := now.Sub(b.last).Seconds()
 	b.tokens += elapsed * float64(rps)
@@ -167,38 +189,12 @@ func IsSuspicious(ctx context.Context) bool {
 	return ctx.Value(ctxKeySuspicious) == true
 }
 
-// ClientIP extracts the client IP from the request, honoring the
-// X-Forwarded-For header set by Cloudflare or a reverse proxy.
+// ClientIP extracts the spoof-resistant client IP from the request. It only
+// trusts proxy headers (CF-Connecting-IP / X-Forwarded-For) when the
+// TRUSTED_PROXY=1 environment variable is set; otherwise it uses the TCP peer
+// address so an attacker cannot forge the value.
 func ClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		for i := 0; i < len(xff); i++ {
-			if xff[i] == ',' {
-				return trimSpace(xff[:i])
-			}
-		}
-		return trimSpace(xff)
-	}
-	if ra := r.Header.Get("X-Real-IP"); ra != "" {
-		return trimSpace(ra)
-	}
-	host := r.RemoteAddr
-	for i := 0; i < len(host); i++ {
-		if host[i] == ':' {
-			return host[:i]
-		}
-	}
-	return host
-}
-
-func trimSpace(s string) string {
-	start, end := 0, len(s)
-	for start < end && (s[start] == ' ' || s[start] == '\t') {
-		start++
-	}
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
-		end--
-	}
-	return s[start:end]
+	return ip.ClientIP(r)
 }
 
 func itoa(n int) string {

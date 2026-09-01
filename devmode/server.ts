@@ -7,18 +7,21 @@
  *
  * ── Device binding ─────────────────────────────────────────────────────────
  * On first run a DEVICE_ID is generated (hash of hostname + user + DEV_TOKEN)
- * and stored in `devmode/.device_id`. Every /api request must carry a matching
- * `X-Device-Id` header OR come from a localhost origin. Requests from other
- * devices are rejected with 403 and logged.
+ * and stored in `devmode/.device_id`. When `ALLOW_REMOTE=true` every /api
+ * request must carry a matching `X-Device-Id` header; requests from other
+ * devices are rejected with 403 and logged. The Host/Origin headers are
+ * attacker-controlled and are never trusted for this decision.
  *
  * ── Localhost-only (default) ──────────────────────────────────────────────
- * The server binds to 127.0.0.1:8788 and rejects any request whose Host or
- * Origin is not localhost, unless `ALLOW_REMOTE=true` is set (for cloud deploy).
+ * The server binds to 127.0.0.1:8788, so by default only the owner's own
+ * machine can reach it. `ALLOW_REMOTE=true` is required for a cloud deploy.
  *
  * ── Auth ──────────────────────────────────────────────────────────────────
  * Every /api request must carry `Authorization: Bearer <DEV_TOKEN>` or a
- * `?token=<DEV_TOKEN>` query param. The token is compared via a timing-safe
- * hash comparison and is never logged in plain text.
+ * `?token=<DEV_TOKEN>` query param — always, even for localhost. The token is
+ * compared via a timing-safe hash comparison and is never logged in plain
+ * text. On first run a random token is generated and stored in
+ * `devmode/.dev_token` (an explicit `DEV_TOKEN` env var overrides it).
  *
  * ── KV schema (shared with edge worker / origin shield) ───────────────────
  *   ban:{ip}      -> reason
@@ -30,7 +33,7 @@
 
 import { serve } from 'bun';
 import { Hono } from 'hono';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,7 +42,6 @@ import { hostname, userInfo } from 'node:os';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const PORT = Number(process.env.PORT ?? 8788);
-const DEV_TOKEN = process.env.DEV_TOKEN ?? 'change-me';
 const REDIS_URL = process.env.REDIS_URL;
 const ALLOW_REMOTE = process.env.ALLOW_REMOTE === 'true';
 const RULES_PATH = process.env.RULES_PATH ?? join(__dirname, '..', 'rules.toml');
@@ -176,6 +178,44 @@ function mockStats(): DevStats {
     aggressive: false,
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* Auth token                                                          */
+/* ------------------------------------------------------------------ */
+
+const DEV_TOKEN_FILE = join(__dirname, '.dev_token');
+
+/**
+ * Load or generate the DEV_TOKEN.
+ *
+ * The default `change-me` is never used as a real secret: on first run a
+ * cryptographically random token is generated and persisted to
+ * `devmode/.dev_token` so it survives restarts. An explicit `DEV_TOKEN` env
+ * var always wins (except the literal `change-me`, which is rejected so a
+ * misconfigured default can never be a live secret).
+ */
+function loadOrCreateDevToken(): string {
+  const fromEnv = process.env.DEV_TOKEN;
+  if (fromEnv && fromEnv.length > 0 && fromEnv !== 'change-me') {
+    return fromEnv;
+  }
+  if (existsSync(DEV_TOKEN_FILE)) {
+    const existing = readFileSync(DEV_TOKEN_FILE, 'utf8').trim();
+    if (existing.length > 0) {
+      return existing;
+    }
+  }
+  const generated = randomBytes(32).toString('hex');
+  try {
+    mkdirSync(dirname(DEV_TOKEN_FILE), { recursive: true });
+    writeFileSync(DEV_TOKEN_FILE, generated, 'utf8');
+  } catch {
+    // Non-fatal — token still works in-memory for this run.
+  }
+  return generated;
+}
+
+const DEV_TOKEN = loadOrCreateDevToken();
 
 /* ------------------------------------------------------------------ */
 /* Device binding                                                      */
@@ -787,12 +827,12 @@ function authorized(authHeader: string | undefined, queryToken: string | undefin
   return scheme === 'Bearer' && !!token && safeEqual(token, DEV_TOKEN);
 }
 
-function deviceAllowed(deviceHeader: string | undefined, host: string | undefined, origin: string | undefined): boolean {
-  // Localhost requests are always allowed (owner's own machine).
-  if (isLocalhost(host, origin)) {
-    return true;
-  }
-  // Remote requests must present the matching device id.
+function deviceAllowed(deviceHeader: string | undefined): boolean {
+  // The Host/Origin headers are attacker-controlled and are NOT trusted for
+  // security. The server binds to 127.0.0.1, so when ALLOW_REMOTE=false only
+  // the owner's own machine can reach it and no device id is needed. When
+  // ALLOW_REMOTE=true the server is reachable remotely, so every request must
+  // present the matching device id. The token is always required separately.
   return !!deviceHeader && safeEqual(deviceHeader, DEVICE_ID);
 }
 
@@ -829,24 +869,24 @@ app.use('/api/*', async (c, next) => {
     return c.body(null, 204);
   }
 
-  // Localhost-only enforcement (unless ALLOW_REMOTE=true for cloud deploy).
-  if (!ALLOW_REMOTE && !isLocalhost(host, origin)) {
-    console.warn(`[fox-shield] rejected non-localhost request from host=${host} origin=${origin}`);
-    return c.json({ error: 'forbidden: localhost only' }, 403);
-  }
-
-  // Device binding: remote requests must match the owner's device id.
-  if (!deviceAllowed(deviceHeader, host, origin)) {
-    console.warn(`[fox-shield] rejected request from foreign device (host=${host})`);
-    return c.json({ error: 'forbidden: device not bound' }, 403);
-  }
-
-  // Token auth.
+  // Token auth — ALWAYS required, even for localhost. This is the primary
+  // gate and is never skipped. The Host header is attacker-controlled and is
+  // not used to relax this check.
   const auth = c.req.header('authorization');
   const token = c.req.query('token');
   if (!authorized(auth, token)) {
     console.warn('[fox-shield] unauthorized /api attempt (bad token)');
     return c.json({ error: 'unauthorized' }, 401);
+  }
+
+  // Device binding. The server binds to 127.0.0.1, so when ALLOW_REMOTE=false
+  // only the owner's machine can reach it and no device id is needed. When
+  // ALLOW_REMOTE=true the server is reachable remotely, so every request must
+  // present the matching device id — we cannot trust the Host header to tell
+  // local from remote.
+  if (ALLOW_REMOTE && !deviceAllowed(deviceHeader)) {
+    console.warn(`[fox-shield] rejected request from foreign device (host=${host})`);
+    return c.json({ error: 'forbidden: device not bound' }, 403);
   }
 
   await next();
@@ -1092,7 +1132,7 @@ if (isBunRuntime) {
   console.log(`fox-shield Developer Mode → http://127.0.0.1:${PORT}`);
   console.log(`Mode: ${mode}${ALLOW_REMOTE ? ' (ALLOW_REMOTE=true — remote erişim açık)' : ' (localhost-only)'}`);
   console.log(`Device ID: ${DEVICE_ID}`);
-  console.log(`DEV_TOKEN: ${DEV_TOKEN === 'change-me' ? '(default — set DEV_TOKEN in .env)' : '(set)'}`);
+  console.log(`DEV_TOKEN: ${process.env.DEV_TOKEN ? '(from env)' : '(auto-generated, see devmode/.dev_token)'}`);
   console.log(`Store: ${getMode() === 'cloud' ? 'Cloudflare KV' : REDIS_URL ? 'Redis' : 'Mock (10 sample dark entries)'}`);
 
   serve({

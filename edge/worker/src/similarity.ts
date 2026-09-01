@@ -12,7 +12,7 @@
  */
 
 import type { Store } from './store';
-import { darkKey, banKey } from './store';
+import { darkKey, banKey, addDark, darkIndexValues } from './store';
 
 export interface SimilarityConfig {
   threshold: number;
@@ -126,11 +126,12 @@ export class SimilarityDetector {
 
     const threshold = aggressive ? this.cfg.aggressiveThreshold : this.cfg.threshold;
 
-    // Compare against stored dark-list values.
-    const darkValues = await this.store.snapshot();
+    // Compare against the bounded index of recent dark-list values. This works
+    // with KV (which cannot be enumerated) as well as the in-memory store.
+    const darkValues = await darkIndexValues(this.store);
     for (const value of darkValues) {
       if (similarity(normalized, value) >= threshold) {
-        await this.store.set(darkKey(hash), normalized, this.cfg.banSeconds);
+        await addDark(this.store, hash, normalized, this.cfg.banSeconds);
         await this.store.set(banKey(ip), 'similarity match', this.cfg.banSeconds);
         return true;
       }

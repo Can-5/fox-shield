@@ -13,8 +13,10 @@
 package store
 
 import (
+	"container/list"
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -41,10 +43,22 @@ type Store interface {
 
 // MemoryStore is a thread-safe in-memory implementation of Store. It is used
 // as a fallback when Redis is not configured or unreachable.
+//
+// Ban entries (keys prefixed with "ban:") are bounded by maxBans using an LRU
+// eviction policy so an attacker rotating many distinct IPs cannot exhaust
+// memory by creating unbounded ban records.
 type MemoryStore struct {
 	mu    sync.RWMutex
 	items map[string]memItem
+	// banLRU tracks ban keys in recency order (front = most recently used) so
+	// the oldest ban can be evicted when the cap is reached.
+	banLRU    *list.List
+	banOrder  map[string]*list.Element
 }
+
+// maxBans caps the number of in-memory ban records to prevent memory
+// exhaustion from an attacker rotating many distinct IPs.
+const maxBans = 50_000
 
 type memItem struct {
 	value     string
@@ -53,7 +67,11 @@ type memItem struct {
 
 // NewMemoryStore returns an empty in-memory store.
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{items: make(map[string]memItem)}
+	return &MemoryStore{
+		items:    make(map[string]memItem),
+		banLRU:   list.New(),
+		banOrder: make(map[string]*list.Element),
+	}
 }
 
 func (m *MemoryStore) Get(_ context.Context, key string) (string, error) {
@@ -78,7 +96,30 @@ func (m *MemoryStore) Set(_ context.Context, key, value string, ttl time.Duratio
 		exp = time.Now().Add(ttl)
 	}
 	m.items[key] = memItem{value: value, expiresAt: exp}
+	if strings.HasPrefix(key, "ban:") {
+		m.touchBan(key)
+	}
 	return nil
+}
+
+// touchBan records a ban key as most-recently-used and evicts the oldest ban
+// when the cap is exceeded. Callers must hold m.mu.
+func (m *MemoryStore) touchBan(key string) {
+	if el, ok := m.banOrder[key]; ok {
+		m.banLRU.MoveToFront(el)
+		return
+	}
+	el := m.banLRU.PushFront(key)
+	m.banOrder[key] = el
+	if m.banLRU.Len() > maxBans {
+		oldest := m.banLRU.Back()
+		if oldest != nil {
+			oldKey := oldest.Value.(string)
+			delete(m.banOrder, oldKey)
+			delete(m.items, oldKey)
+			m.banLRU.Remove(oldest)
+		}
+	}
 }
 
 func (m *MemoryStore) Incr(_ context.Context, key string) (int64, error) {
@@ -114,6 +155,12 @@ func (m *MemoryStore) Delete(_ context.Context, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.items, key)
+	if strings.HasPrefix(key, "ban:") {
+		if el, ok := m.banOrder[key]; ok {
+			m.banLRU.Remove(el)
+			delete(m.banOrder, key)
+		}
+	}
 	return nil
 }
 

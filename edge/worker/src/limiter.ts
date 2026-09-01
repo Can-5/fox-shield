@@ -10,6 +10,15 @@
  *
  * Normal mode: 20 rps / burst 40. Aggressive mode: 10 rps / burst 20.
  * Ban TTL: 10 minutes normal, 60 minutes aggressive.
+ *
+ * ── Consistency / TOCTOU ───────────────────────────────────────────────────
+ * This edge limiter is BEST-EFFORT only. The window state is read then written
+ * as separate KV operations (get + set), so concurrent requests from the same
+ * IP can race (TOCTOU) and Cloudflare KV is eventually consistent — a burst
+ * can slip through under load. The authoritative rate limit is enforced by the
+ * Go origin limiter (cmd/shield), which runs in-memory and is race-free. Do
+ * not rely on this edge limiter as the sole defense; treat it as a coarse
+ * first line that reduces load on the origin.
  */
 
 import type { Store } from './store';

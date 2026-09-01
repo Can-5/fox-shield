@@ -17,6 +17,8 @@ dist/
 !.env.example
 *.pem
 *.key
+.dev_token
+.device_id
 
 # OS
 .DS_Store

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/foxai/fox-shield/internal/ip"
 	"github.com/foxai/fox-shield/internal/store"
 )
 
@@ -185,8 +186,8 @@ func (d *Detector) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		aggressive := r.Context().Value(ctxKeyAggressive) == true
 		if d.Check(r.Context(), r, aggressive) {
-			ip := clientIP(r)
-			_ = store.BanReason(r.Context(), d.store, ip, "similarity-match", d.cfg.BanDuration)
+			ipAddr := ip.ClientIP(r)
+			_ = store.BanReason(r.Context(), d.store, ipAddr, "similarity-match", d.cfg.BanDuration)
 			http.Error(rw, "Forbidden", http.StatusForbidden)
 			return
 		}
@@ -240,17 +241,3 @@ func (b *replayBody) Read(p []byte) (int, error) {
 }
 
 func (b *replayBody) Close() error { return nil }
-
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return strings.TrimSpace(xff)
-	}
-	host := r.RemoteAddr
-	if i := strings.LastIndexByte(host, ':'); i >= 0 {
-		return host[:i]
-	}
-	return host
-}

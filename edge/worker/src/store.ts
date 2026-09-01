@@ -53,6 +53,85 @@ export function destroyKey(ip: string): string {
   return `destroy:${ip}`;
 }
 
+/**
+ * Key under which the bounded index of recent dark-list hashes is stored.
+ *
+ * Cloudflare KV cannot be enumerated from the Worker runtime, so the similarity
+ * detector cannot scan the whole dark list. Instead we maintain a bounded JSON
+ * array of the most recent dark hashes under this single key; the similarity
+ * detector reads it and fetches each hash's value via a direct KV get. This
+ * keeps the Levenshtein scan working in production (KV mode) as well as in the
+ * in-memory fallback.
+ */
+export function darkIndexKey(): string {
+  return 'dark:index';
+}
+
+/** Maximum number of dark hashes retained in the index for similarity scans. */
+export const DARK_INDEX_MAX = 100;
+
+/**
+ * Adds a hash to the dark list and maintains the bounded dark index. Both the
+ * WAF and the similarity detector use this so every dark-listed request is
+ * visible to the similarity scan regardless of the backing store.
+ */
+export async function addDark(
+  store: Store,
+  hash: string,
+  value: string,
+  ttlSeconds: number,
+): Promise<void> {
+  await store.set(darkKey(hash), value, ttlSeconds);
+
+  const raw = await store.get(darkIndexKey());
+  let index: string[] = [];
+  if (raw) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        index = parsed.filter((v): v is string => typeof v === 'string');
+      }
+    } catch {
+      index = [];
+    }
+  }
+  // De-duplicate (most recent wins) and keep the newest DARK_INDEX_MAX entries.
+  index = index.filter((h) => h !== hash);
+  index.push(hash);
+  if (index.length > DARK_INDEX_MAX) {
+    index = index.slice(index.length - DARK_INDEX_MAX);
+  }
+  await store.set(darkIndexKey(), JSON.stringify(index), ttlSeconds);
+}
+
+/**
+ * Returns the values of the most recent dark-listed hashes, for the similarity
+ * scan. Works with both KV and the in-memory store.
+ */
+export async function darkIndexValues(store: Store): Promise<string[]> {
+  const raw = await store.get(darkIndexKey());
+  if (!raw) {
+    return [];
+  }
+  let index: string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      index = parsed.filter((v): v is string => typeof v === 'string');
+    }
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const h of index) {
+    const v = await store.get(darkKey(h));
+    if (v !== null) {
+      out.push(v);
+    }
+  }
+  return out;
+}
+
 /** KV-backed Store. */
 export class KVStore implements Store {
   private readonly kv: KVNamespace;

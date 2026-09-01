@@ -5,13 +5,13 @@
 package waf
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/foxai/fox-shield/internal/ip"
 	"github.com/foxai/fox-shield/internal/store"
 )
 
@@ -87,30 +87,81 @@ func New(rules []Rule, matchTimeout time.Duration, s store.Store) (*WAF, error) 
 	return w, nil
 }
 
-// Match scans the request target and body for any signature. It returns the
-// first matching signature ID and category, or ("", "") if clean.
-func (w *WAF) Match(r *http.Request) (id, category string) {
+// maxBodyBytes caps how much of the request body is scanned. Bodies larger
+// than this cannot be fully inspected and are treated as suspicious rather
+// than silently truncated (which would let a payload hide past the cap).
+const maxBodyBytes = 1 << 20 // 1 MiB
+
+// hopByHopHeaders are excluded from header scanning per RFC 7230 §6.1.
+var hopByHopHeaders = map[string]struct{}{
+	"connection":          {},
+	"keep-alive":          {},
+	"proxy-authenticate":  {},
+	"proxy-authorization": {},
+	"te":                  {},
+	"trailer":             {},
+	"transfer-encoding":   {},
+	"upgrade":             {},
+}
+
+// MatchResult describes the outcome of a WAF scan.
+type MatchResult struct {
+	ID       string
+	Category string
+	// OversizedBody is true when the request body exceeded the scan cap and
+	// could not be fully inspected.
+	OversizedBody bool
+}
+
+// Match scans the request target, headers and body for any signature. It
+// returns the first matching signature ID and category, or an empty result if
+// clean. OversizedBody is set when the body exceeded the scan cap.
+func (w *WAF) Match(r *http.Request) MatchResult {
 	target := r.Method + " " + r.URL.RequestURI()
-	body := readBody(r)
-	haystack := target + "\n" + body
+	body, oversized := readBody(r)
+	haystack := target + "\n" + headerHaystack(r) + "\n" + body
 
 	for _, sig := range w.sigs {
 		matched := matchWithTimeout(sig.Pattern, haystack, w.timeout)
 		if matched {
-			return sig.ID, sig.Category
+			return MatchResult{ID: sig.ID, Category: sig.Category, OversizedBody: oversized}
 		}
 	}
-	return "", ""
+	return MatchResult{OversizedBody: oversized}
 }
 
-// Middleware wraps a handler. On a signature match it bans the client IP and
-// returns 403.
+// headerHaystack joins relevant request headers (lowercased name:value) into a
+// single scan string so payloads smuggled in headers (User-Agent, Referer,
+// X-*) are caught. Hop-by-hop headers are excluded.
+func headerHaystack(r *http.Request) string {
+	var b strings.Builder
+	for name, values := range r.Header {
+		lower := strings.ToLower(name)
+		if _, skip := hopByHopHeaders[lower]; skip {
+			continue
+		}
+		for _, v := range values {
+			b.WriteString(lower)
+			b.WriteByte(':')
+			b.WriteString(v)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// Middleware wraps a handler. On a signature match or an oversized body it
+// bans the client IP and returns 403.
 func (w *WAF) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		id, cat := w.Match(r)
-		if id != "" {
-			ip := clientIP(r)
-			_ = store.BanReason(r.Context(), w.store, ip, "waf:"+id+":"+cat, 60*time.Minute)
+		res := w.Match(r)
+		if res.ID != "" || res.OversizedBody {
+			ipAddr := ip.ClientIP(r)
+			reason := "waf:oversized-body"
+			if res.ID != "" {
+				reason = "waf:" + res.ID + ":" + res.Category
+			}
+			_ = store.BanReason(r.Context(), w.store, ipAddr, reason, 60*time.Minute)
 			http.Error(rw, "Forbidden", http.StatusForbidden)
 			return
 		}
@@ -133,25 +184,28 @@ func matchWithTimeout(re *regexp.Regexp, s string, timeout time.Duration) bool {
 }
 
 // readBody reads and restores the request body so downstream handlers can
-// still read it.
-func readBody(r *http.Request) string {
+// still read it. It returns the body string and whether it exceeded the scan
+// cap (maxBodyBytes).
+func readBody(r *http.Request) (string, bool) {
 	if r.Body == nil {
-		return ""
+		return "", false
 	}
 	buf := make([]byte, 0, 4096)
 	tmp := make([]byte, 1024)
+	oversized := false
 	for {
 		n, err := r.Body.Read(tmp)
 		buf = append(buf, tmp[:n]...)
 		if err != nil {
 			break
 		}
-		if len(buf) > 1<<20 { // cap at 1 MiB
+		if len(buf) > maxBodyBytes {
+			oversized = true
 			break
 		}
 	}
 	r.Body = newReplayBody(buf)
-	return string(buf)
+	return string(buf), oversized
 }
 
 // replayBody lets a consumed body be re-read.
@@ -172,17 +226,3 @@ func (b *replayBody) Read(p []byte) (int, error) {
 }
 
 func (b *replayBody) Close() error { return nil }
-
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return strings.TrimSpace(xff)
-	}
-	host := r.RemoteAddr
-	if i := strings.LastIndexByte(host, ':'); i >= 0 {
-		return host[:i]
-	}
-	return host
-}

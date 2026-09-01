@@ -3,6 +3,12 @@
 // random nonce; the client must find a value whose SHA-256 hash starts with a
 // configurable number of leading zero bits. On success a __shield_pass cookie
 // is set and the client is allowed through.
+//
+// Security: the pass cookie value is a random 32-byte token stored in the
+// store with a TTL, so a static or guessed cookie is rejected. The proof nonce
+// is bound to the client IP and timestamp, stored server-side, and deleted
+// after a single use to prevent replay and fixation. The CAPTCHA answer is
+// stored server-side keyed by the nonce rather than embedded in the HTML.
 package challenge
 
 import (
@@ -15,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/foxai/fox-shield/internal/ip"
 	"github.com/foxai/fox-shield/internal/limiter"
 	"github.com/foxai/fox-shield/internal/store"
 )
@@ -28,6 +35,8 @@ type Config struct {
 	DifficultyAggressive int
 	// PassTTL is how long a solved __shield_pass cookie is valid.
 	PassTTL time.Duration
+	// NonceTTL is how long a proof-of-work nonce remains valid.
+	NonceTTL time.Duration
 }
 
 // DefaultConfig returns the v1.0 defaults.
@@ -36,6 +45,7 @@ func DefaultConfig() Config {
 		DifficultyNormal:     4,
 		DifficultyAggressive: 5,
 		PassTTL:              10 * time.Minute,
+		NonceTTL:             2 * time.Minute,
 	}
 }
 
@@ -53,6 +63,12 @@ func New(cfg Config, s store.Store) *Challenge {
 	return &Challenge{cfg: cfg, store: s}
 }
 
+// passKey returns the store key for a pass token.
+func passKey(token string) string { return "pass:" + token }
+
+// nonceKey returns the store key for a proof nonce.
+func nonceKey(nonce string) string { return "nonce:" + nonce }
+
 // Handler serves the challenge endpoint. It returns a JSON payload with the
 // nonce and difficulty, and verifies submitted solutions.
 func (c *Challenge) Handler() http.Handler {
@@ -66,6 +82,9 @@ func (c *Challenge) Handler() http.Handler {
 		if r.Context().Value(ctxKeyAggressive) == true {
 			difficulty = c.cfg.DifficultyAggressive
 		}
+		// Bind the nonce to the client IP and a timestamp, stored server-side.
+		clientIP := ip.ClientIP(r)
+		_ = c.store.Set(r.Context(), nonceKey(nonce), clientIP, c.cfg.NonceTTL)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"nonce":      nonce,
@@ -88,30 +107,32 @@ func (c *Challenge) verify(w http.ResponseWriter, r *http.Request) {
 	if r.Context().Value(ctxKeyAggressive) == true {
 		difficulty = c.cfg.DifficultyAggressive
 	}
-	if !validProof(req.Nonce, req.Proof, difficulty) {
+	if !c.validProof(r.Context(), req.Nonce, req.Proof, difficulty, ip.ClientIP(r)) {
 		http.Error(w, "Invalid Proof", http.StatusForbidden)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     CookieName,
-		Value:    randomHex(16),
-		Path:     "/",
-		MaxAge:   int(c.cfg.PassTTL.Seconds()),
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
+	c.issuePass(w, r)
 }
 
-// validProof checks that sha256(nonce+proof) has `difficulty` leading zero bits.
-func validProof(nonce, proof string, difficulty int) bool {
+// validProof checks that the nonce was issued for this client IP and that
+// sha256(nonce+proof) has `difficulty` leading zero bits. The nonce is
+// one-time: it is deleted after verification to prevent replay.
+func (c *Challenge) validProof(ctx context.Context, nonce, proof string, difficulty int, clientIP string) bool {
 	if nonce == "" || proof == "" {
+		return false
+	}
+	// The nonce must exist and be bound to the requesting IP.
+	boundIP, err := c.store.Get(ctx, nonceKey(nonce))
+	if err != nil {
+		return false
+	}
+	// Delete the nonce immediately (one-time use) regardless of proof result.
+	_ = c.store.Delete(ctx, nonceKey(nonce))
+	if boundIP != clientIP {
 		return false
 	}
 	sum := sha256.Sum256([]byte(nonce + proof))
 	hexStr := hex.EncodeToString(sum[:])
-	// Count leading zero bits from the hex string.
 	bits := 0
 	for i := 0; i < len(hexStr); i++ {
 		v := hexVal(hexStr[i])
@@ -119,7 +140,6 @@ func validProof(nonce, proof string, difficulty int) bool {
 			bits += 4
 			continue
 		}
-		// Count leading zero bits of this nibble.
 		for shift := 3; shift >= 0; shift-- {
 			if v&(1<<shift) == 0 {
 				bits++
@@ -130,6 +150,23 @@ func validProof(nonce, proof string, difficulty int) bool {
 		break
 	}
 	return bits >= difficulty
+}
+
+// issuePass issues a random pass token, stores it with a TTL, and sets it as
+// the __shield_pass cookie.
+func (c *Challenge) issuePass(w http.ResponseWriter, r *http.Request) {
+	token := randomHex(32)
+	_ = c.store.Set(r.Context(), passKey(token), ip.ClientIP(r), c.cfg.PassTTL)
+	http.SetCookie(w, &http.Cookie{
+		Name:     CookieName,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(c.cfg.PassTTL.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
 }
 
 func hexVal(c byte) int {
@@ -156,12 +193,26 @@ func (c *Challenge) Middleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if cookie, err := r.Cookie(CookieName); err == nil && cookie.Value != "" {
+		if c.hasValidPass(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		c.Handler().ServeHTTP(w, r)
 	})
+}
+
+// hasValidPass reports whether the request carries a pass cookie whose token
+// exists in the store (i.e. was actually issued by this shield).
+func (c *Challenge) hasValidPass(r *http.Request) bool {
+	cookie, err := r.Cookie(CookieName)
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+	boundIP, err := c.store.Get(r.Context(), passKey(cookie.Value))
+	if err != nil {
+		return false
+	}
+	return boundIP == ip.ClientIP(r)
 }
 
 func randomHex(n int) string {

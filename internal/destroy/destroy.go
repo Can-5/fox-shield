@@ -10,6 +10,8 @@ import (
 	"log"
 	"net/http"
 	"sync/atomic"
+
+	"github.com/foxai/fox-shield/internal/ip"
 )
 
 // Destroyer is the final drop layer.
@@ -35,7 +37,7 @@ func (d *Destroyer) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Value(ctxKeyMalicious) == true {
 			d.destroyed.Add(1)
-			log.Printf("destroy: dropped malicious request %s %s from %s", r.Method, r.URL.Path, clientIP(r))
+			log.Printf("destroy: dropped malicious request %s %s from %s", r.Method, r.URL.Path, ip.ClientIP(r))
 			http.Error(w, "Destroyed", http.StatusForbidden)
 			return
 		}
@@ -51,22 +53,4 @@ const ctxKeyMalicious ctxKey = 0
 // destroy layer drops it.
 func MarkMalicious(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxKeyMalicious, true)
-}
-
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		for i := 0; i < len(xff); i++ {
-			if xff[i] == ',' {
-				return xff[:i]
-			}
-		}
-		return xff
-	}
-	host := r.RemoteAddr
-	for i := 0; i < len(host); i++ {
-		if host[i] == ':' {
-			return host[:i]
-		}
-	}
-	return host
 }

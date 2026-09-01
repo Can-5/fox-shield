@@ -16,7 +16,7 @@ import { createStore, banKey } from './store';
 import { RateLimiter } from './limiter';
 import { Waf } from './waf';
 import { SimilarityDetector, normalizeRequest, fnv1a } from './similarity';
-import { Challenge, CHALLENGE_COOKIE } from './challenge';
+import { Challenge } from './challenge';
 import { Destroyer } from './destroy';
 
 export interface Env {
@@ -25,31 +25,59 @@ export interface Env {
   ORIGIN_URL?: string;
 }
 
-/** Extracts the client IP, honoring CF-Connecting-IP then X-Forwarded-For. */
+/**
+ * Extracts the client IP.
+ *
+ * On Cloudflare Workers, CF-Connecting-IP is set by Cloudflare's edge and is
+ * trustworthy (it cannot be spoofed by the client). X-Forwarded-For is only
+ * used as a fallback when CF-Connecting-IP is absent (e.g. local dev), and is
+ * NOT trusted when the worker is deployed behind Cloudflare because the
+ * attacker controls it. The Go origin uses a separate, env-gated extractor
+ * (internal/ip) because it may be exposed directly.
+ *
+ * The returned address is normalized: IPv6 zone identifiers are stripped and
+ * the address is lowercased so it can be used as a stable rate-limit / ban key.
+ */
 export function clientIp(request: Request): string {
+  let raw = '';
   const cf = request.headers.get('CF-Connecting-IP');
   if (cf && cf.trim() !== '') {
-    return cf.trim();
-  }
-  const xff = request.headers.get('X-Forwarded-For');
-  if (xff) {
-    const first = xff.split(',')[0];
-    if (first && first.trim() !== '') {
-      return first.trim();
+    raw = cf.trim();
+  } else {
+    const xff = request.headers.get('X-Forwarded-For');
+    if (xff) {
+      const first = xff.split(',')[0];
+      if (first && first.trim() !== '') {
+        raw = first.trim();
+      }
     }
   }
-  return 'unknown';
+  if (raw === '') {
+    return 'unknown';
+  }
+  return normalizeIp(raw);
+}
+
+/**
+ * Normalizes an IP address for use as a key: strips an IPv6 zone identifier
+ * ("fe80::1%eth0" -> "fe80::1") and lowercases the address.
+ */
+export function normalizeIp(addr: string): string {
+  const zone = addr.indexOf('%');
+  const clean = zone >= 0 ? addr.slice(0, zone) : addr;
+  return clean.toLowerCase();
 }
 
 /** Reads the request body as text (empty for GET/HEAD). */
-async function readBody(request: Request): Promise<string> {
+async function readBody(request: Request): Promise<{ body: string; oversized: boolean }> {
   if (request.method === 'GET' || request.method === 'HEAD') {
-    return '';
+    return { body: '', oversized: false };
   }
   try {
-    return await request.text();
+    const body = await request.text();
+    return { body, oversized: body.length > 1 << 20 };
   } catch {
-    return '';
+    return { body: '', oversized: false };
   }
 }
 
@@ -101,7 +129,7 @@ export default {
     const limiter = new RateLimiter(store);
     const waf = new Waf(store);
     const similarity = new SimilarityDetector(store);
-    const challenge = new Challenge();
+    const challenge = new Challenge(store);
     const destroyer = new Destroyer(store);
 
     const url = new URL(request.url);
@@ -133,12 +161,12 @@ export default {
     }
 
     // Read the body once; reused by WAF, similarity and the origin request.
-    const body = await readBody(request);
+    const { body, oversized } = await readBody(request);
     const normalized = normalizeRequest(request.method, url.pathname, url.searchParams, body);
     const hash = fnv1a(normalized);
 
     // 2. WAF.
-    const wafMatch = waf.match(request.method, url.pathname, url.search, body);
+    const wafMatch = waf.match(request.method, url.pathname, url.search, body, request.headers, oversized);
     if (wafMatch) {
       await waf.block(ip, hash, normalized, wafMatch);
       return forbidden('Blocked by WAF');
@@ -151,7 +179,7 @@ export default {
     }
 
     // 4. Challenge — only for suspicious requests without a valid pass cookie.
-    const hasPass = request.headers.get('cookie')?.includes(`${CHALLENGE_COOKIE}=1`) ?? false;
+    const hasPass = await challenge.hasValidPass(request, ip);
     if (limit.suspicious && !hasPass) {
       return challenge.serve(ip, aggressive);
     }
