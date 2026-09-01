@@ -329,12 +329,7 @@ export async function recordHack(
   const next = count + 1;
   await store.set(key, String(next), HACK_COUNT_TTL);
 
-  const threshold = aggressive ? SUBNET_BAN_THRESHOLD_AGGRESSIVE : SUBNET_BAN_THRESHOLD;
-  if (subnetHash !== null && next >= threshold) {
-    const subnetReason = `unlimited:wifi:${reason}`;
-    await store.set(subnetBanKey(subnetHash), subnetReason, undefined);
-    await store.set(banKey(subnetHash), subnetReason, undefined);
-  }
+  // WiFi/subnet ban disabled — only device+IP ban (user request: wifi değil cihaz ban)
   return next;
 }
 
@@ -374,18 +369,10 @@ export async function recordOffense(
     await store.set(banKey(ipHash), `temporary:${reason}`, 60 * 60);
   }
 
-  // Threshold reached -> unlimited IP + device ban.
+  // Threshold reached -> unlimited IP + device ban (no WiFi ban — device only).
   if (next >= threshold) {
     await store.set(banKey(ipHash), `unlimited:${reason}`, undefined);
     await store.set(deviceKey(deviceHash), `unlimited:${reason}`, undefined);
-  }
-
-  // Subnet swelling: many offenses from one /64 in a short window -> ban the
-  // whole subnet so IP rotation cannot inflate the ban list.
-  if (subnetHash !== null && next >= SUBNET_OFFENSE_THRESHOLD) {
-    const subnetReason = `unlimited:subnet-swell:${reason}`;
-    await store.set(subnetBanKey(subnetHash), subnetReason, undefined);
-    await store.set(banKey(subnetHash), subnetReason, undefined);
   }
 
   return next;
