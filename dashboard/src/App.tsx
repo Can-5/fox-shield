@@ -8,6 +8,9 @@ import { ThresholdSlider } from './components/ThresholdSlider';
 import { TestButton } from './components/TestButton';
 import { DarkPreview } from './components/DarkPreview';
 import { Settings } from './components/Settings';
+import { TrafficChart } from './components/TrafficChart';
+import { FirewallEvents } from './components/FirewallEvents';
+import { ActivityLog } from './components/ActivityLog';
 import {
   fetchStats,
   fetchBans,
@@ -28,6 +31,50 @@ import type {
   ShieldStats,
   ThresholdState,
 } from './types';
+
+/** Cloudflare-style page header with breadcrumb + "Last updated". */
+function PageHead({ title, sub }: { title: string; sub: string }) {
+  return (
+    <div class="page-head">
+      <div>
+        <h1>{title}</h1>
+        <p class="sub">{sub}</p>
+      </div>
+      <span class="updated">Last updated: 2 min ago</span>
+    </div>
+  );
+}
+
+/** Quick actions rail — Cloudflare-style shortcuts. */
+function QuickActions() {
+  return (
+    <div class="card">
+      <h2 class="card-title">Quick actions</h2>
+      <div class="quick-actions">
+        <a class="qa" href="#firewall">
+          <span class="qa-icon" aria-hidden="true">⚙</span>
+          Configure firewall
+          <span class="qa-arrow" aria-hidden="true">›</span>
+        </a>
+        <a class="qa" href="#analytics">
+          <span class="qa-icon" aria-hidden="true">▤</span>
+          View analytics
+          <span class="qa-arrow" aria-hidden="true">›</span>
+        </a>
+        <a class="qa" href="#tools">
+          <span class="qa-icon" aria-hidden="true">⚡</span>
+          Run load test
+          <span class="qa-arrow" aria-hidden="true">›</span>
+        </a>
+        <a class="qa" href="http://localhost:8788" target="_blank" rel="noreferrer">
+          <span class="qa-icon" aria-hidden="true">⌘</span>
+          Developer Mode
+          <span class="qa-arrow" aria-hidden="true">›</span>
+        </a>
+      </div>
+    </div>
+  );
+}
 
 export function App() {
   const [stats, setStats] = useState<ShieldStats | null>(null);
@@ -105,15 +152,28 @@ export function App() {
         <main class="shell">
           {nav === 'overview' && (
             <div class="page">
-              <section class="hero">
-                <h1>Shield is up.</h1>
-                <p>
-                  fox-shield is absorbing and neutralizing malicious traffic across the edge.
-                  Live telemetry below.
-                </p>
-              </section>
+              <PageHead
+                title="Overview"
+                sub="Traffic and threat telemetry for fox-shield."
+              />
 
               {stats && <Stats stats={stats} aggressive={mode.aggressive} />}
+
+              <div class="grid-3">
+                <div class="card">
+                  <h2 class="card-title">
+                    Traffic
+                    <span class="hint">Last 24 hours</span>
+                  </h2>
+                  <TrafficChart />
+                </div>
+                <QuickActions />
+              </div>
+
+              <div class="grid-2">
+                <FirewallEvents />
+                <ActivityLog />
+              </div>
 
               <div class="grid-2">
                 <AttackMap stats={stats ?? MOCK_STATS} />
@@ -131,10 +191,7 @@ export function App() {
 
           {nav === 'analytics' && (
             <div class="page">
-              <section class="hero">
-                <h1>Analytics</h1>
-                <p>Traffic and threat telemetry across the edge.</p>
-              </section>
+              <PageHead title="Analytics" sub="Traffic and threat telemetry across the edge." />
               {stats && <Stats stats={stats} aggressive={mode.aggressive} />}
               <div class="grid-2">
                 <AttackMap stats={stats ?? MOCK_STATS} />
@@ -145,20 +202,17 @@ export function App() {
 
           {nav === 'firewall' && (
             <div class="page">
-              <section class="hero">
-                <h1>Firewall</h1>
-                <p>Configure how fox-shield filters and challenges traffic.</p>
-              </section>
+              <PageHead
+                title="Firewall"
+                sub="Configure how fox-shield filters and challenges traffic."
+              />
               <Settings settings={settings} onChange={handleSettings} />
             </div>
           )}
 
           {nav === 'tools' && (
             <div class="page">
-              <section class="hero">
-                <h1>Tools</h1>
-                <p>Load testing and developer utilities.</p>
-              </section>
+              <PageHead title="Tools" sub="Load testing and developer utilities." />
               <div class="grid-2">
                 <ThresholdSlider value={threshold.threshold} onChange={handleThreshold} />
                 <TestButton />
@@ -169,10 +223,10 @@ export function App() {
 
           {nav === 'settings' && (
             <div class="page">
-              <section class="hero">
-                <h1>Settings</h1>
-                <p>Shield configuration. Persisted locally and exposed as JSON for the worker.</p>
-              </section>
+              <PageHead
+                title="Settings"
+                sub="Shield configuration. Persisted locally and exposed as JSON for the worker."
+              />
               <Settings settings={settings} onChange={handleSettings} />
 
               <section class="card settings-card">
@@ -196,7 +250,14 @@ export function App() {
 
           <footer class="footer">
             <span>fox-shield v1.1 · edge + origin shield</span>
-            <span>Dark list is private — Developer Mode only</span>
+            <div class="links">
+              <a href="#overview">Overview</a>
+              <a href="#firewall">Firewall</a>
+              <a href="#settings">Settings</a>
+              <a href="https://developers.cloudflare.com" target="_blank" rel="noreferrer">
+                Help
+              </a>
+            </div>
           </footer>
         </main>
       </div>
