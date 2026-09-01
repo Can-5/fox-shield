@@ -37,6 +37,9 @@ export const DEFAULT_LIMITER_CONFIG: LimiterConfig = {
   violationsBeforeBan: 3,
 };
 
+export const DAILY_BLOCK_LIMIT = 50000;
+export const DAILY_CHALLENGE_LIMIT = 100000;
+
 export interface AllowResult {
   ok: boolean;
   retryAfter: number;

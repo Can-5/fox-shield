@@ -39,3 +39,37 @@ export interface ModeState {
 export interface ThresholdState {
   threshold: number;
 }
+
+/** Security level presets, mirroring Cloudflare's Security Level control. */
+export type SecurityLevel = 'off' | 'low' | 'medium' | 'high' | 'under_attack';
+
+/** Cache level presets. */
+export type CacheLevel = 'bypass' | 'standard' | 'aggressive';
+
+/** WAF sensitivity presets. */
+export type WafSensitivity = 'low' | 'medium' | 'high';
+
+/**
+ * Full shield configuration. Persisted to localStorage and exposed as JSON so
+ * the edge worker / origin shield can read it.
+ */
+export interface ShieldSettings {
+  /** Security level preset. */
+  securityLevel: SecurityLevel;
+  /** Bot Fight Mode toggle. */
+  botFightMode: boolean;
+  /** Challenge passage window in minutes (10–60). */
+  challengePassage: number;
+  /** Cache level. */
+  cacheLevel: CacheLevel;
+  /** Browser Integrity Check toggle. */
+  browserIntegrityCheck: boolean;
+  /** Whitelisted IPs, one per line. */
+  ipWhitelist: string;
+  /** Geo-blocked country codes (ISO 3166-1 alpha-2). */
+  geoBlock: string[];
+  /** WAF sensitivity. */
+  wafSensitivity: WafSensitivity;
+  /** Daily block quota before the shield hard-stops. */
+  dailyBlockQuota: number;
+}

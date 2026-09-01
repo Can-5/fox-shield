@@ -14,10 +14,11 @@ export function Header({ mode, live, onToggle }: HeaderProps) {
           <span class="brand-mark" aria-hidden="true">
             🦊
           </span>
-          <div>
-            <div>fox-shield</div>
+          <div class="brand-text">
+            <div class="brand-name">fox-shield</div>
             <div class="brand-sub">Shield Dashboard</div>
           </div>
+          <span class="plan-badge">FREE · v1.1</span>
         </div>
 
         <div class="topbar-actions">
@@ -26,14 +27,14 @@ export function Header({ mode, live, onToggle }: HeaderProps) {
             {live ? 'Live' : 'Demo data'}
           </span>
 
-          <label class="switch">
+          <label class="switch under-attack">
             <input
               type="checkbox"
               checked={mode.aggressive}
               onChange={(e) => onToggle((e.target as HTMLInputElement).checked)}
             />
             <span class="switch-track" aria-hidden="true" />
-            <span class="switch-label">Aggressive Mode</span>
+            <span class="switch-label">Under Attack</span>
           </label>
         </div>
       </div>

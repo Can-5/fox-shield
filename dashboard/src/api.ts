@@ -7,7 +7,7 @@
  * back to realistic mock data when the API is unreachable.
  */
 
-import type { BanEntry, ModeState, ShieldStats, ThresholdState } from './types';
+import type { BanEntry, ModeState, ShieldSettings, ShieldStats, ThresholdState } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 
@@ -126,4 +126,43 @@ export async function unbanIp(ip: string): Promise<void> {
   } catch {
     // Static site — nothing to call.
   }
+}
+
+const SETTINGS_KEY = 'fox-shield:settings';
+
+/** Default shield configuration. */
+export const DEFAULT_SETTINGS: ShieldSettings = {
+  securityLevel: 'medium',
+  botFightMode: true,
+  challengePassage: 30,
+  cacheLevel: 'standard',
+  browserIntegrityCheck: true,
+  ipWhitelist: '',
+  geoBlock: [],
+  wafSensitivity: 'medium',
+  dailyBlockQuota: 50_000,
+};
+
+/** Loads shield settings from localStorage (falls back to defaults). */
+export function loadSettings(): ShieldSettings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) {
+      return DEFAULT_SETTINGS;
+    }
+    const parsed = JSON.parse(raw) as Partial<ShieldSettings>;
+    return { ...DEFAULT_SETTINGS, ...parsed };
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+}
+
+/** Persists shield settings to localStorage and exposes them as JSON. */
+export function saveSettings(settings: ShieldSettings): void {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+}
+
+/** Returns the settings as a JSON string for the worker to read. */
+export function settingsJson(settings: ShieldSettings): string {
+  return JSON.stringify(settings, null, 2);
 }

@@ -17,3 +17,23 @@ ban_aggressive_minutes = 60
 [similarity]
 threshold = 0.90
 aggressive_threshold = 0.85
+
+[quota]
+# Günlük blok hakkı — v1.1'de Cloudflare Free'nin 1000 kuralını katlıyoruz
+daily_block_limit = 50000
+daily_challenge_limit = 100000
+# 0 = sınırsız (kendi LXC'n için)
+unlimited = false
+
+[security]
+# Cloudflare benzeri seviye: off/low/medium/high/under_attack
+level = "medium"
+bot_fight_mode = true
+browser_integrity_check = true
+challenge_passage_minutes = 30
+cache_level = "standard" # bypass/standard/aggressive
+waf_sensitivity = "medium" # low/medium/high
+
+[geo]
+blocked_countries = [] # örn ["CN","RU"]
+whitelisted_ips = [] # örn ["1.2.3.4/32"]
