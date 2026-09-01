@@ -235,11 +235,10 @@ function bannedPage(maskedIp, deviceHashShort, offenseCount, subnet, reason, req
 ║  No personal information is displayed.   ║
 ║  Security event has been recorded.       ║
 ║                                          ║
-║          ─────────────────────            ║
 ║          FOXAI SECURITY SYSTEM            ║
 ║                                          ║
 ╚══════════════════════════════════════════╝
-</div><p style="text-align:center"><a href="/idiot.html">you are an idiot - harmless</a> | <a href="https://github.com/Can-5/fox-shield">fox-shield</a></p></body></html>`;
+</div><div style="text-align:center;margin:16px 0;font-size:22px;font-weight:900;color:#f87171">DURATION: 30 MINUTES — auto decided</div><p style="text-align:center"><a href="/idiot.html">you are an idiot - harmless</a> | <a href="https://github.com/Can-5/fox-shield">fox-shield</a></p></body></html>`;
 }
 function forbidden(
   maskedIp: string,
