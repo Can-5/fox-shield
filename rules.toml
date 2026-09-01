@@ -1,0 +1,19 @@
+# fox-shield v1.0 — shared rules (origin Go + edge Worker)
+# Kurallar %100 ortak: bu dosya hem Go shield hem de edge worker tarafından okunur.
+
+[limits]
+normal_rps = 20
+aggressive_rps = 10 # 10 veya 15
+burst = 40
+aggressive_burst = 20
+window_ms = 1000
+
+[challenge]
+difficulty_normal = 4
+difficulty_aggressive = 5
+ban_normal_minutes = 10
+ban_aggressive_minutes = 60
+
+[similarity]
+threshold = 0.90
+aggressive_threshold = 0.85

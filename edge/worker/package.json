@@ -1,0 +1,20 @@
+{
+  "name": "fox-shield-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "fox-shield edge worker (Cloudflare Workers) — limiter/WAF/similarity/challenge/destroy shield",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240101.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0",
+    "wrangler": "^3.0.0"
+  }
+}

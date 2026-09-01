@@ -1,0 +1,21 @@
+services:
+  shield:
+    build: .
+    container_name: fox-shield
+    ports:
+      - "8080:8080"
+    environment:
+      FOX_MODE: origin
+      ORIGIN_URL: http://origin-app:3000
+      REDIS_URL: redis://redis:6379
+      AGGRESSIVE_MODE: "false"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: fox-shield-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped

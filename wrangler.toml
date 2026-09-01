@@ -1,0 +1,13 @@
+# fox-shield edge worker — Cloudflare Workers (0 TL, 300 PoP)
+name = "fox-shield-edge"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+# KV namespace for rate-limit counters, bans, and the dark list.
+[[kv_namespaces]]
+binding = "SHIELD_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[vars]
+AGGRESSIVE_MODE = "false"
+ORIGIN_URL = "https://your-origin.example.com"
