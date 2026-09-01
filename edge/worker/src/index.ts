@@ -209,34 +209,37 @@ function buildOriginRequest(
   return new Request(origin.toString(), init);
 }
 
-function bannedPage(
-  maskedIp: string,
-  deviceHashShort: string,
-  offenseCount: number,
-  subnet: string,
-  reason: string,
-  req: Request,
-): string {
-  const isHack = reason.includes('unlimited') || reason.includes('waf') || reason.includes('similarity');
-  const detail = isHack ? 'hacklemeye altnz' : reason;
-  const ua = req.headers.get('user-agent') ?? 'unknown';
-  const acceptLang = (req.headers.get('accept-language') ?? '').toLowerCase();
-  const langCode = acceptLang.split(',')[0]?.split(';')[0]?.trim() ?? 'tr';
-  const ref = req.headers.get('referer') ?? '';
-  const cfRay = req.headers.get('cf-ray') ?? '';
-  const cfAsn = (req as any).cf?.asn ?? req.headers.get('cf-asn') ?? '';
-  const colo = (req as any).cf?.colo ?? '';
-  const country = req.headers.get('cf-ipcountry') ?? (req as any).cf?.country ?? 'unknown';
-  const method = req.method;
-  const path = new URL(req.url).pathname + new URL(req.url).search;
-  const time = new Date().toISOString();
-  const t = (tr: string, en: string) => (langCode.startsWith('tr') ? tr : en);
-  const title = t('you are banned ha ha ha', 'you are banned ha ha ha');
-  const idiot = t('you are an idiot', 'you are an idiot');
-  const reasonLabel = t('Sebep', 'Reason');
-  const caught = t('fox-shield seni yakalad  hacklemeye altnz', 'fox-shield caught you  you tried to hack');
-  const permanent = t('IP kalc olarak engellendi (unlimited).', 'IP permanently banned (unlimited).');
-  return `<!doctype html><html lang="${langCode.startsWith('tr')?'tr':'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0e14;color:#e5e7eb;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;animation:bgflash .2s infinite alternate} @keyframes bgflash{from{background:#0b0e14}to{background:#1a0a0a}} .card{background:#1f2937;border:2px solid #f87171;border-radius:12px;padding:28px;max-width:720px;width:94%;text-align:center;box-shadow:0 0 30px rgba(248,113,113,.6);animation:shake .15s infinite} @keyframes shake{0%{transform:translate(0,0) rotate(0)}25%{transform:translate(3px,2px) rotate(0.5deg)}50%{transform:translate(-2px,3px) rotate(-0.5deg)}75%{transform:translate(2px,-1px) rotate(0.3deg)}} h1{font-size:36px;margin:0 0 8px;color:#f87171;animation:textflash .15s infinite alternate} @keyframes textflash{from{color:#f6821f}to{color:#f87171}} p{color:#9aa3b2;margin:6px 0;font-size:14px} code{background:#0b0e14;padding:2px 6px;border-radius:4px;color:#f87171;word-break:break-all} table{width:100%;margin:14px 0;border-collapse:collapse;font-size:13px} td{padding:6px 8px;border:1px solid #2d3748;text-align:left} td:first-child{color:#9aa3b2;width:160px} a{color:#7fb3ff} .idiot{margin-top:14px;font-size:26px;color:#f87171;font-weight:900;animation:flash 0.15s infinite alternate,zoom .4s infinite} @keyframes flash{from{opacity:1}to{opacity:0.2}} @keyframes zoom{0%{transform:scale(1)}50%{transform:scale(1.12)}} .ip-big{font-size:22px;color:#f87171;font-weight:900;animation:pulse .4s infinite} @keyframes pulse{0%{text-shadow:0 0 0 #f87171}50%{text-shadow:0 0 16px #f87171,0 0 30px #f87171}100%{text-shadow:0 0 0 #f87171}} marquee{background:#f00;color:#fff;padding:6px;margin:10px -28px;font-weight:900} .virus{margin-top:12px;padding:10px;border:1px dashed #f87171;background:#2a0a0a;border-radius:8px}</style></head><body><div class="card"><h1>${title} </h1><div class="idiot"> ${idiot.toUpperCase()}  ${idiot.toUpperCase()} </div><marquee>${detail}  ${idiot}  GET REKT  LOL  ${title} </marquee><p>${reasonLabel}: <code>${detail}</code>  <span style="color:#f87171;font-weight:800">ACAYP TROLL MODU</span></p><p>${caught}</p><table><tr><td>IP (masked)</td><td><code class="ip-big">${maskedIp}</code></td></tr><tr><td>Cihaz (hash)</td><td><code>${deviceHashShort}</code></td></tr><tr><td>Ihlal sayisi</td><td>${offenseCount}</td></tr><tr><td>Subnet</td><td><code>${subnet}</code></td></tr><tr><td>Ulke / Colo / ASN</td><td>${country} / ${colo} / ${cfAsn}</td></tr><tr><td>Zaman</td><td>${time}</td></tr><tr><td>stek</td><td><code>${method} ${path}</code></td></tr><tr><td>User-Agent</td><td style="word-break:break-all">${ua}</td></tr><tr><td>Accept-Language</td><td>${acceptLang || ''}</td></tr><tr><td>Referer</td><td style="word-break:break-all">${ref}</td></tr><tr><td>CF-Ray</td><td>${cfRay}</td></tr><tr><td>Sebep detay</td><td><code>${reason}</code></td></tr></table><p><a href="/idiot.html" target="_blank" style="font-size:18px;font-weight:800;background:#f87171;color:#000;padding:8px 14px;border-radius:6px;text-decoration:none;display:inline-block;animation:flash .2s infinite alternate"> ACAYP TROLL  IDIOT.HTML A </a>  <a href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" target="_blank" rel="noopener">YouTube meme</a></p><div class="virus"><strong style="color:#f87171"> no_escape.exe  BU BR VRSTR! ndirmeyin  cihaznz bozar, tm dosyalar kilitleyebilir</strong><br><a href="https://github.com/Can-5/fox-shield#%EF%B8%8F-uyar%C4%B1-vir%C3%BCs-linki" style="color:#f87171;font-weight:800">no_escape.exe (gerek virs yerine gvenli uyar sayfas  indirme yok)</a><br><span style="font-size:12px;color:#9aa3b2">Gerek zararl yazlm linki gvenlik nedeniyle verilmiyor. Bu link sadece uyar/bilgi amaldr.</span></div><p style="font-size:12px;color:#6b7280;margin-top:12px">${permanent} Yukardaki veriler sadece senin isteinden grlenler.</p></div><audio id="bgm" loop autoplay><source src="data:audio/midi;base64,TVRoZAAAAAYAAQACAQBNVHJrAAAAGQD/UQMHoSAEkEAAkEAAkEAAkEAAkEAAkEAAkEAAkEAA=="></audio><script>try{const a=new (window.AudioContext||window.webkitAudioContext)();const notes=[262,262,294,262,349,330,262,262,294,262,392,349,262,523,440,349,330,294,294,330,349,349,330,294,330,262,262,294,262,349,330];let i=0;setInterval(()=>{const o=a.createOscillator();o.type='square';o.frequency.value=notes[i%notes.length];o.connect(a.destination);o.start();setTimeout(()=>o.stop(),140);i++},180);let t=0;setInterval(()=>{document.title=t%2?' you are an idiot ':' you are banned ha ha ha ';t++},150);}catch(e){} let s=0;setInterval(()=>{document.body.style.filter=s%2?'hue-rotate(90deg)':'hue-rotate(0deg)';s++},120);try{const bgm=document.getElementById('bgm');if(bgm) bgm.volume=0.3;}catch(e){}</script></body></html>`;
+function bannedPage(maskedIp, deviceHashShort, offenseCount, subnet, reason, req){
+  const fp = (deviceHashShort||'').padEnd(8,'*') + '........'.slice(0,8);
+  const incident = 'FX-' + Math.random().toString(16).slice(2,8).toUpperCase();
+  const risk = isNaN(Number(offenseCount)) ? 98 : Math.min(98, 70+Number(offenseCount)*10);
+  const duration = reason.includes('unlimited') ? 'PERMANENT' : '10 MINUTES';
+  const action = (reason.includes('device')||reason.includes('similarity')) ? 'DEVICE BLOCK' : 'IP BLOCK';
+  const title = 'FOXAI SECURITY - BLOCKED';
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0e14;color:#e5e7eb;font-family:ui-monospace,Menlo,Consolas,monospace} .box{line-height:1.4;font-size:14px;white-space:pre} a{color:#7fb3ff}</style></head><body><div class="box">╔══════════════════════════════════════════╗
+║             FOXAI SECURITY            ║
+╠══════════════════════════════════════════╣
+║                                          ║
+║          ACCESS TEMPORARILY BLOCKED      ║
+║                                          ║
+║  Suspicious activity was detected.       ║
+║                                          ║
+║  Risk Score:        ${String(risk).padEnd(3)} / 100             ║
+║  Incident ID:       ${incident}             ║
+║  Action:            ${action.padEnd(16)}║
+║  Duration:          ${duration.padEnd(16)}║
+║                                          ║
+║  Source Fingerprint:                     ║
+║  ${fp.padEnd(34)}║
+║                                          ║
+║  No personal information is displayed.   ║
+║  Security event has been recorded.       ║
+║                                          ║
+║          ─────────────────────            ║
+║          FOXAI SECURITY SYSTEM            ║
+║                                          ║
+╚══════════════════════════════════════════╝
+</div><p style="text-align:center"><a href="/idiot.html">you are an idiot - harmless</a> | <a href="https://github.com/Can-5/fox-shield">fox-shield</a></p></body></html>`;
 }
 function forbidden(
   maskedIp: string,
