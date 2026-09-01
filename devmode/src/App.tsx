@@ -2,29 +2,70 @@ import { useEffect, useMemo, useState } from 'preact/hooks';
 import { AuthGate } from './components/AuthGate';
 import { Stats } from './components/Stats';
 import { DarkList } from './components/DarkList';
+import { AdminPanel } from './components/AdminPanel';
 import {
   fetchDark,
   fetchStats,
+  fetchSettings,
+  fetchSystem,
   unban,
   deleteDark,
   setThreshold,
   setMode,
   getToken,
   clearToken,
+  getDeviceId,
   AuthError,
+  DeviceError,
 } from './api';
-import type { DarkEntry, DevStats } from './types';
+import type { DarkEntry, DevStats, ShieldSettings, SystemInfo } from './types';
+
+const DEFAULT_SETTINGS: ShieldSettings = {
+  securityLevel: 'medium',
+  botFightMode: true,
+  challengePassage: 30,
+  cacheLevel: 'standard',
+  browserIntegrityCheck: true,
+  ipWhitelist: '',
+  geoBlock: [],
+  wafSensitivity: 'medium',
+  dailyBlockQuota: 50000,
+  dailyChallengeLimit: 100000,
+  unlimited: false,
+  normalRps: 20,
+  aggressiveRps: 10,
+  burst: 40,
+  aggressiveBurst: 20,
+  windowMs: 1000,
+  difficultyNormal: 4,
+  difficultyAggressive: 5,
+  banNormalMinutes: 10,
+  banAggressiveMinutes: 60,
+  threshold: 0.9,
+  aggressiveThreshold: 0.85,
+};
 
 export function App() {
   const [authed, setAuthed] = useState(() => getToken().length > 0);
   const [entries, setEntries] = useState<DarkEntry[]>([]);
   const [stats, setStats] = useState<DevStats | null>(null);
+  const [settings, setSettings] = useState<ShieldSettings>(DEFAULT_SETTINGS);
+  const [system, setSystem] = useState<SystemInfo | null>(null);
   const [filter, setFilter] = useState('');
   const [threshold, setThresholdValue] = useState(0.9);
   const [aggressive, setAggressive] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState<{ msg: string; kind: 'ok' | 'err' } | null>(null);
+  const [deviceError, setDeviceError] = useState(false);
 
-  // Live tail — poll every 1s for new bans / stats.
+  const deviceId = getDeviceId();
+
+  const notify = (msg: string, kind: 'ok' | 'err' = 'ok') => {
+    setNotice({ msg, kind });
+    window.setTimeout(() => setNotice(null), 4000);
+  };
+
+  // Live tail — poll every 1s for new bans / stats / system.
   useEffect(() => {
     if (!authed) {
       return;
@@ -33,12 +74,13 @@ export function App() {
 
     const tick = async () => {
       try {
-        const [d, s] = await Promise.all([fetchDark(), fetchStats()]);
+        const [d, s, sys] = await Promise.all([fetchDark(), fetchStats(), fetchSystem()]);
         if (cancelled) {
           return;
         }
         setEntries(d);
         setStats(s);
+        setSystem(sys);
         setThresholdValue(s.threshold);
         setAggressive(s.aggressive);
         setError('');
@@ -46,6 +88,8 @@ export function App() {
         if (err instanceof AuthError) {
           clearToken();
           setAuthed(false);
+        } else if (err instanceof DeviceError) {
+          setDeviceError(true);
         } else if (!cancelled) {
           setError('Sunucuya bağlanılamadı. localhost:8788 çalışıyor mu?');
         }
@@ -58,6 +102,18 @@ export function App() {
       cancelled = true;
       window.clearInterval(id);
     };
+  }, [authed]);
+
+  // Load settings once on auth.
+  useEffect(() => {
+    if (!authed) {
+      return;
+    }
+    void fetchSettings()
+      .then(setSettings)
+      .catch(() => {
+        // Settings load failure is non-fatal — defaults remain.
+      });
   }, [authed]);
 
   const filtered = useMemo(() => {
@@ -99,6 +155,8 @@ export function App() {
     return <AuthGate onAuthed={() => setAuthed(true)} />;
   }
 
+  const isCloud = system?.mode === 'cloud' || system?.allowRemote === true;
+
   return (
     <>
       <header class="topbar">
@@ -113,6 +171,15 @@ export function App() {
             </div>
           </div>
           <div class="topbar-actions">
+            {isCloud ? (
+              <span class="status-badge cloud" title="Özel bulut — token korumalı">
+                ☁️ Private Cloud
+              </span>
+            ) : (
+              <span class="status-badge lock" title="Cihaz bağlama aktif">
+                🔒 Sadece bu PC — Device: {deviceId.slice(0, 7)}
+              </span>
+            )}
             <span class="status-badge">
               <span class="dot" aria-hidden="true" />
               Canlı
@@ -140,6 +207,19 @@ export function App() {
       </header>
 
       <main class="shell">
+        {deviceError && (
+          <div class="device-error">
+            <strong>🔒 Bu cihaz bağlı değil.</strong> DevMode yalnızca sahibinin PC'sinde çalışır.
+            Başka bir cihazdan erişim engellendi.
+          </div>
+        )}
+
+        {notice && (
+          <div class={`notice ${notice.kind}`} role="status">
+            {notice.msg}
+          </div>
+        )}
+
         <section class="hero">
           <h1>Dark List Viewer</h1>
           <p>
@@ -189,8 +269,22 @@ export function App() {
 
         <DarkList entries={filtered} onUnban={handleUnban} onDelete={handleDelete} />
 
+        <section class="admin-section">
+          <h2 class="section-title">⚙️ Tam Yönetim Paneli</h2>
+          <AdminPanel
+            settings={settings}
+            system={system}
+            onSettingsChange={setSettings}
+            onSystemChange={setSystem}
+            onNotify={notify}
+          />
+        </section>
+
         <footer class="footer">
-          <span>fox-shield Developer Mode · localhost:8788 · yalnızca sahibine özel</span>
+          <span>
+            fox-shield Developer Mode · {isCloud ? '☁️ özel bulut' : 'localhost:8788'} ·{' '}
+            {isCloud ? 'token korumalı' : 'yalnızca sahibine özel'}
+          </span>
           <span>Canlı güncelleme: 1 sn</span>
         </footer>
       </main>

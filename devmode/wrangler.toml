@@ -1,0 +1,13 @@
+# fox-shield Developer Mode — private cloud deploy (Cloudflare Workers)
+# Sadece DEV_TOKEN ile erişilebilir. Başkası 401 alır.
+name = "fox-shield-dev"
+main = "server.ts"
+compatibility_date = "2026-01-01"
+
+# KV namespace for rules.toml mirror + bans + dark list.
+[[kv_namespaces]]
+binding = "SHIELD_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[vars]
+ALLOW_REMOTE = "true"

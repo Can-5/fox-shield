@@ -13,3 +13,5 @@ declare module 'bun' {
 
   export function serve(options: BunServeOptions): unknown;
 }
+
+declare const Bun: any;
