@@ -164,7 +164,9 @@ func (w *WAF) Middleware(next http.Handler) http.Handler {
 				banDur = 0
 			}
 			_ = store.BanReason(r.Context(), w.store, ipAddr, reason, banDur)
-			http.Error(rw, "Forbidden", http.StatusForbidden)
+			rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+			rw.WriteHeader(http.StatusForbidden)
+			_, _ = rw.Write([]byte(`<!doctype html><html lang="tr"><head><meta charset="utf-8"><title>you are banned ha ha ha</title><style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0e14;color:#e5e7eb;font-family:system-ui} .card{background:#1f2937;border:1px solid #2d3748;border-radius:12px;padding:32px;max-width:560px;text-align:center} h1{color:#f6821f;font-size:32px} code{background:#0b0e14;padding:2px 6px;border-radius:4px;color:#f87171}</style></head><body><div class="card"><h1>you are banned ha ha ha 😂</h1><p>Sebep: <code>hacklemeye çalıştınız - ` + reason + `</code></p><p>fox-shield seni yakaladı</p></div></body></html>`))
 			return
 		}
 		next.ServeHTTP(rw, r)

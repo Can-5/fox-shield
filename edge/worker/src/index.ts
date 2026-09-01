@@ -112,11 +112,15 @@ function buildOriginRequest(
   return new Request(origin.toString(), init);
 }
 
-/** Returns a 403 response with the given message. */
-function forbidden(message: string): Response {
-  return new Response(message, {
+function bannedPage(reason: string): string {
+  const isHack = reason.includes('unlimited') || reason.includes('waf') || reason.includes('similarity');
+  const detail = isHack ? 'hacklemeye çalıştınız' : reason;
+  return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>you are banned ha ha ha</title><style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0e14;color:#e5e7eb;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial} .card{background:#1f2937;border:1px solid #2d3748;border-radius:12px;padding:32px;max-width:560px;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,.5)} h1{font-size:32px;margin:0 0 12px;color:#f6821f} p{color:#9aa3b2;margin:6px 0} code{background:#0b0e14;padding:2px 6px;border-radius:4px;color:#f87171}</style></head><body><div class="card"><h1>you are banned ha ha ha 😂</h1><p>Sebep: <code>${detail}</code></p><p>fox-shield seni yakaladı — hacklemeye çalıştınız</p><p style="font-size:12px;color:#6b7280;margin-top:16px">IP kalıcı olarak engellendi (unlimited). İtiraz için admin ile iletişime geç.</p></div></body></html>`;
+}
+function forbidden(reason: string): Response {
+  return new Response(bannedPage(reason), {
     status: 403,
-    headers: { 'content-type': 'text/plain; charset=utf-8' },
+    headers: { 'content-type': 'text/html; charset=utf-8' },
   });
 }
 
@@ -144,8 +148,9 @@ export default {
     }
 
     // Banned IPs are rejected outright.
-    if ((await store.get(banKey(ip))) !== null) {
-      return forbidden('Blocked');
+    const banReason = await store.get(banKey(ip));
+    if (banReason !== null) {
+      return forbidden(banReason);
     }
 
     // 1. Rate limiter.
@@ -169,13 +174,15 @@ export default {
     const wafMatch = waf.match(request.method, url.pathname, url.search, body, request.headers, oversized);
     if (wafMatch) {
       await waf.block(ip, hash, normalized, wafMatch);
-      return forbidden('Blocked by WAF');
+      const r = wafMatch.id ? `unlimited:waf:${wafMatch.id}:${wafMatch.category}` : 'waf:oversized-body';
+      return forbidden(r);
     }
 
     // 3. Similarity.
     const similar = await similarity.check(ip, normalized, aggressive);
     if (similar) {
-      return forbidden('Blocked');
+      const r = (await store.get(banKey(ip))) ?? 'unlimited:similarity match';
+      return forbidden(r);
     }
 
     // 4. Challenge — only for suspicious requests without a valid pass cookie.

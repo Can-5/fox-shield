@@ -188,7 +188,9 @@ func (d *Detector) Middleware(next http.Handler) http.Handler {
 		if d.Check(r.Context(), r, aggressive) {
 			ipAddr := ip.ClientIP(r)
 			_ = store.BanReason(r.Context(), d.store, ipAddr, "unlimited:similarity-match", 0)
-			http.Error(rw, "Forbidden", http.StatusForbidden)
+			rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+			rw.WriteHeader(http.StatusForbidden)
+			_, _ = rw.Write([]byte(`<!doctype html><html lang="tr"><head><meta charset="utf-8"><title>you are banned ha ha ha</title><style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0e14;color:#e5e7eb;font-family:system-ui} .card{background:#1f2937;border:1px solid #2d3748;border-radius:12px;padding:32px;max-width:560px;text-align:center} h1{color:#f6821f;font-size:32px}</style></head><body><div class="card"><h1>you are banned ha ha ha 😂</h1><p>Sebep: <code>hacklemeye çalıştınız — similarity</code></p><p>fox-shield seni yakaladı</p></div></body></html>`))
 			return
 		}
 		next.ServeHTTP(rw, r)
