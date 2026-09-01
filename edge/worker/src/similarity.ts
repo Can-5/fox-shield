@@ -12,7 +12,8 @@
  */
 
 import type { Store } from './store';
-import { darkKey, banKey, addDark, darkIndexValues } from './store';
+import { darkKey, addDark, darkIndexValues, recordOffense, storeRawIp } from './store';
+import { vaultEncrypt } from './hash';
 
 export interface SimilarityConfig {
   threshold: number;
@@ -110,17 +111,23 @@ export class SimilarityDetector {
   /**
    * Evaluates a normalized request against the dark list. Returns true when the
    * request is malicious (exact dark-list hit or similarity above threshold).
+   * On a hit it escalates the offense ladder and stores the encrypted raw IP.
    */
   async check(
-    ip: string,
+    ipHash: string,
+    deviceHash: string,
+    subnetHash: string | null,
+    rawIp: string,
+    salt: string,
     normalized: string,
     aggressive: boolean,
   ): Promise<boolean> {
     const hash = fnv1a(normalized);
 
-    // Exact dark-list hit is always malicious — unlimited ban.
+    // Exact dark-list hit is always malicious.
     if ((await this.store.get(darkKey(hash))) !== null) {
-      await this.store.set(banKey(ip), 'unlimited:similarity exact match', undefined);
+      await recordOffense(this.store, ipHash, deviceHash, subnetHash, 'similarity exact match', aggressive);
+      await storeRawIp(this.store, ipHash, rawIp, salt, vaultEncrypt);
       return true;
     }
 
@@ -132,7 +139,8 @@ export class SimilarityDetector {
     for (const value of darkValues) {
       if (similarity(normalized, value) >= threshold) {
         await addDark(this.store, hash, normalized, this.cfg.banSeconds);
-        await this.store.set(banKey(ip), 'unlimited:similarity match', undefined);
+        await recordOffense(this.store, ipHash, deviceHash, subnetHash, 'similarity match', aggressive);
+        await storeRawIp(this.store, ipHash, rawIp, salt, vaultEncrypt);
         return true;
       }
     }

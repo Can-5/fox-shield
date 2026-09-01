@@ -6,12 +6,17 @@
  * schema is shared with the Go origin shield:
  *
  *   ratelimit:{ip}   -> sliding-window request timestamps (JSON array of ms)
- *   ban:{ip}         -> banned IPs (value = reason)
+ *   ban:{hash}       -> banned IPs (value = reason); key is HMAC(ip, SALT), never raw
  *   dark:{hash}      -> dark-listed request hashes (value = normalized request)
  *   destroy:{ip}     -> destroyed-request counter (value = count)
+ *   hackcount:{hash} -> hack counter per hashed IP (TTL 30d)
+ *   subnetban:{hash} -> permanent subnet ban (value = reason); key is HMAC(subnet, SALT)
+ *   ipvault:{hash}   -> AES-GCM encrypted raw IP, recoverable only with the salt
  *
- * KVNamespace is the Cloudflare Workers KV binding type. When it is undefined
- * (local dev / tests) the MemoryStore is used so the worker still runs.
+ * Raw IPs are never stored as keys or values (except inside the encrypted
+ * ipvault namespace). KVNamespace is the Cloudflare Workers KV binding type.
+ * When it is undefined (local dev / tests) the MemoryStore is used so the
+ * worker still runs.
  */
 
 /** Minimal KV surface we depend on, so tests can inject a fake. */
@@ -41,9 +46,68 @@ export function rateLimitKey(ip: string): string {
   return `ratelimit:${ip}`;
 }
 
-export function banKey(ip: string): string {
-  return `ban:${ip}`;
+/**
+ * Key for a permanent IP ban. `hash` is the HMAC-SHA256 of the raw IP (see
+ * hash.ts hashIP) — the raw address is NEVER used as a key, so a leaked KV
+ * dump reveals nothing about who was banned.
+ */
+export function banKey(hash: string): string {
+  return `ban:${hash}`;
 }
+
+/** Key for a permanent device ban (value = reason). `deviceHash` is FNV-1a of
+ * UA+lang+country+colo (see hash.ts deviceHash). */
+export function deviceKey(deviceHash: string): string {
+  return `device:${deviceHash}`;
+}
+
+/** Key for the per-hashed-IP offense counter (TTL 30d). */
+export function offenseKey(hash: string): string {
+  return `offense:${hash}`;
+}
+
+/** Key for the per-hashed-IP hack counter (TTL 30d). */
+export function hackCountKey(hash: string): string {
+  return `hackcount:${hash}`;
+}
+
+/** Key for a permanent subnet ban (value = reason). */
+export function subnetBanKey(subnetHash: string): string {
+  return `subnetban:${subnetHash}`;
+}
+
+/** Key for the encrypted raw-IP vault entry (value = AES-GCM payload). */
+export function ipVaultKey(hash: string): string {
+  return `ipvault:${hash}`;
+}
+
+/** TTL for the per-IP hack counter (30 days). */
+export const HACK_COUNT_TTL = 30 * 24 * 60 * 60;
+
+/** TTL for the per-IP offense counter (30 days). */
+export const OFFENSE_TTL = 30 * 24 * 60 * 60;
+
+/** TTL for the encrypted raw-IP vault entry (30 days). */
+export const RAW_IP_TTL = 30 * 24 * 60 * 60;
+
+/** Offenses before an unlimited IP+device ban in normal mode. */
+export const OFFENSE_BAN_THRESHOLD = 3;
+/** Offenses before an unlimited IP+device ban in aggressive mode. */
+export const OFFENSE_BAN_THRESHOLD_AGGRESSIVE = 2;
+
+/** Offenses from the same /64 subnet within 1h before the subnet is banned
+ * (swelling protection — see recordOffense). */
+export const SUBNET_OFFENSE_THRESHOLD = 5;
+/** Window (seconds) for the /64 subnet offense swelling check. */
+export const SUBNET_OFFENSE_WINDOW = 60 * 60;
+
+/** Threshold of hacks before a subnet gets a permanent ban. */
+export const SUBNET_BAN_THRESHOLD = 3;
+/** Aggressive-mode threshold (2 hacks). */
+export const SUBNET_BAN_THRESHOLD_AGGRESSIVE = 2;
+
+/** Cap on the number of permanent subnet bans retained (anti-bloat). */
+export const SUBNET_BAN_MAX = 10_000;
 
 export function darkKey(hash: string): string {
   return `dark:${hash}`;
@@ -173,6 +237,7 @@ interface MemItem {
 /** Thread-safe in-memory Store used when KV is not bound (local dev / tests). */
 export class MemoryStore implements Store {
   private readonly items = new Map<string, MemItem>();
+  private readonly subnetLRU: string[] = [];
 
   private isExpired(item: MemItem, now: number): boolean {
     return item.expiresAt !== 0 && now >= item.expiresAt;
@@ -193,10 +258,33 @@ export class MemoryStore implements Store {
   async set(key: string, value: string, ttlSeconds?: number): Promise<void> {
     const expiresAt = ttlSeconds && ttlSeconds > 0 ? Date.now() + ttlSeconds * 1000 : 0;
     this.items.set(key, { value, expiresAt });
+    if (key.startsWith('subnetban:')) {
+      this.touchSubnet(key);
+    }
+  }
+
+  private touchSubnet(key: string): void {
+    const idx = this.subnetLRU.indexOf(key);
+    if (idx >= 0) {
+      this.subnetLRU.splice(idx, 1);
+    }
+    this.subnetLRU.push(key);
+    while (this.subnetLRU.length > SUBNET_BAN_MAX) {
+      const oldest = this.subnetLRU.shift();
+      if (oldest !== undefined) {
+        this.items.delete(oldest);
+      }
+    }
   }
 
   async delete(key: string): Promise<void> {
     this.items.delete(key);
+    if (key.startsWith('subnetban:')) {
+      const idx = this.subnetLRU.indexOf(key);
+      if (idx >= 0) {
+        this.subnetLRU.splice(idx, 1);
+      }
+    }
   }
 
   async snapshot(): Promise<string[]> {
@@ -217,4 +305,108 @@ export function createStore(kv: KVNamespace | undefined): Store {
     return new KVStore(kv);
   }
   return new MemoryStore();
+}
+
+/**
+ * Records a hack for a hashed IP and escalates to a permanent subnet ban once
+ * the threshold is reached. Returns the new hack count.
+ *
+ * `subnetHash` is the HMAC of the IP's /64 or /24 prefix (null when the IP
+ * cannot be grouped). When the count reaches the threshold, both the subnet
+ * ban and a ban on the subnet hash are set with no TTL, so any IP in that
+ * subnet is blocked.
+ */
+export async function recordHack(
+  store: Store,
+  hash: string,
+  subnetHash: string | null,
+  reason: string,
+  aggressive: boolean,
+): Promise<number> {
+  const key = hackCountKey(hash);
+  const raw = await store.get(key);
+  const count = raw ? Number.parseInt(raw, 10) || 0 : 0;
+  const next = count + 1;
+  await store.set(key, String(next), HACK_COUNT_TTL);
+
+  const threshold = aggressive ? SUBNET_BAN_THRESHOLD_AGGRESSIVE : SUBNET_BAN_THRESHOLD;
+  if (subnetHash !== null && next >= threshold) {
+    const subnetReason = `unlimited:wifi:${reason}`;
+    await store.set(subnetBanKey(subnetHash), subnetReason, undefined);
+    await store.set(banKey(subnetHash), subnetReason, undefined);
+  }
+  return next;
+}
+
+/**
+ * Records an offense (a WAF or similarity hit) for a hashed IP and escalates
+ * through a strike ladder. Returns the new offense count.
+ *
+ * Swelling protection: a single stray payload must not fill the ban list, so
+ * the FIRST offense only dark-lists the request (no ban). The SECOND offense
+ * issues a temporary IP ban ("2nd similar hit bans"). Only after the offense
+ * threshold (3 normal / 2 aggressive) do we issue an UNLIMITED IP + device ban.
+ *
+ * Subnet swelling: an attacker rotating IPv6 addresses within a single /64
+ * could otherwise inflate the ban list with one entry per rotated address. To
+ * prevent that, when the same /64 produces SUBNET_OFFENSE_THRESHOLD offenses
+ * within SUBNET_OFFENSE_WINDOW we ban the whole /64 subnet hash instead of the
+ * individual /128s, collapsing many entries into one.
+ */
+export async function recordOffense(
+  store: Store,
+  ipHash: string,
+  deviceHash: string,
+  subnetHash: string | null,
+  reason: string,
+  aggressive: boolean,
+): Promise<number> {
+  const key = offenseKey(ipHash);
+  const raw = await store.get(key);
+  const count = raw ? Number.parseInt(raw, 10) || 0 : 0;
+  const next = count + 1;
+  await store.set(key, String(next), OFFENSE_TTL);
+
+  const threshold = aggressive ? OFFENSE_BAN_THRESHOLD_AGGRESSIVE : OFFENSE_BAN_THRESHOLD;
+
+  // 2nd offense (normal mode) -> temporary IP ban ("2nd similar hit bans").
+  if (!aggressive && next === 2) {
+    await store.set(banKey(ipHash), `temporary:${reason}`, 60 * 60);
+  }
+
+  // Threshold reached -> unlimited IP + device ban.
+  if (next >= threshold) {
+    await store.set(banKey(ipHash), `unlimited:${reason}`, undefined);
+    await store.set(deviceKey(deviceHash), `unlimited:${reason}`, undefined);
+  }
+
+  // Subnet swelling: many offenses from one /64 in a short window -> ban the
+  // whole subnet so IP rotation cannot inflate the ban list.
+  if (subnetHash !== null && next >= SUBNET_OFFENSE_THRESHOLD) {
+    const subnetReason = `unlimited:subnet-swell:${reason}`;
+    await store.set(subnetBanKey(subnetHash), subnetReason, undefined);
+    await store.set(banKey(subnetHash), subnetReason, undefined);
+  }
+
+  return next;
+}
+
+/**
+ * Stores the encrypted raw IP in the `ipvault:{hash}` namespace with a 30-day
+ * TTL. The raw address is AES-GCM encrypted under the salt and is recoverable
+ * only by an admin holding the salt (via the DevMode /api/raw-ips endpoint). It
+ * is never used as a key and never displayed, so it does not swell the ban list
+ * and does not leak in a KV dump.
+ */
+export async function storeRawIp(
+  store: Store,
+  ipHash: string,
+  rawIp: string,
+  salt: string,
+  encrypt: (ip: string, salt: string) => Promise<string | null>,
+): Promise<void> {
+  const payload = await encrypt(rawIp, salt);
+  if (payload !== null) {
+    await store.set(ipVaultKey(ipHash), payload, RAW_IP_TTL);
+  }
 }

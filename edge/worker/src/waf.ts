@@ -9,7 +9,8 @@
  */
 
 import type { Store } from './store';
-import { banKey, addDark } from './store';
+import { addDark, recordOffense, storeRawIp } from './store';
+import { vaultEncrypt } from './hash';
 
 export interface WafRule {
   id: string;
@@ -134,14 +135,25 @@ export class Waf {
   }
 
   /**
-   * Records a WAF hit: dark-lists the request hash and bans the IP. Returns the
-   * match so the caller can log it.
+   * Records a WAF hit: dark-lists the request hash and escalates the offense
+   * ladder (see store.recordOffense). The raw IP is never used as a key — only
+   * the hashed IP, device hash and subnet hash are. The raw IP is stored
+   * encrypted in the vault for admin recovery.
    */
-  async block(ip: string, hash: string, normalized: string, match: WafMatch): Promise<void> {
+  async block(
+    ipHash: string,
+    deviceHash: string,
+    subnetHash: string | null,
+    rawIp: string,
+    salt: string,
+    hash: string,
+    normalized: string,
+    match: WafMatch,
+    aggressive: boolean,
+  ): Promise<void> {
     await addDark(this.store, hash, normalized, 60 * 60);
     const reason = match.id ? `waf:${match.id}:${match.category}` : 'waf:oversized-body';
-    const isHack = match.category === 'sqli' || match.category === 'rce' || match.category === 'traversal' || match.category === 'xss' || match.id !== '';
-    // Direkt hack denemesi → unlimited ban (KV'de kalıcı, TTL yok)
-    await this.store.set(banKey(ip), `unlimited:${reason}`, isHack ? undefined : 60 * 60);
+    await recordOffense(this.store, ipHash, deviceHash, subnetHash, reason, aggressive);
+    await storeRawIp(this.store, ipHash, rawIp, salt, vaultEncrypt);
   }
 }

@@ -23,13 +23,13 @@ export class Destroyer {
   /**
    * Drops a flagged request: increments the per-IP destroy counter and returns
    * a 403 "Destroyed" response. Returns null when the request is not flagged
-   * and should continue to the origin.
+   * and should continue to the origin. `ipHash` is the hashed IP (never raw).
    */
-  async destroy(ip: string, flagged: boolean): Promise<Response | null> {
+  async destroy(ipHash: string, flagged: boolean): Promise<Response | null> {
     if (!flagged) {
       return null;
     }
-    const key = destroyKey(ip);
+    const key = destroyKey(ipHash);
     const raw = await this.store.get(key);
     const count = raw ? Number.parseInt(raw, 10) || 0 : 0;
     await this.store.set(key, String(count + 1), 60 * 60);

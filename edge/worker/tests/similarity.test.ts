@@ -64,7 +64,7 @@ describe('SimilarityDetector', () => {
     const hash = fnv1a(norm);
     await addDark(store, hash, norm, 3600);
 
-    const malicious = await det.check('1.2.3.4', norm, false);
+    const malicious = await det.check('iphash', 'devhash', null, '1.2.3.4', 'salt', norm, false);
     expect(malicious).toBe(true);
   });
 
@@ -76,7 +76,7 @@ describe('SimilarityDetector', () => {
 
     // Nearly identical request (one char differs in the body hash).
     const near = 'POST /api&token#aaaaaaab';
-    const malicious = await det.check('1.2.3.4', near, false);
+    const malicious = await det.check('iphash', 'devhash', null, '1.2.3.4', 'salt', near, false);
     expect(malicious).toBe(true);
   });
 
@@ -87,7 +87,7 @@ describe('SimilarityDetector', () => {
     await addDark(store, fnv1a(darkNorm), darkNorm, 3600);
 
     const different = 'GET /home&lang=en#bbbbbbbb';
-    const malicious = await det.check('1.2.3.4', different, false);
+    const malicious = await det.check('iphash', 'devhash', null, '1.2.3.4', 'salt', different, false);
     expect(malicious).toBe(false);
   });
 });

@@ -10,6 +10,10 @@
 package ip
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"hash/fnv"
 	"net"
 	"net/http"
 	"os"
@@ -121,4 +125,68 @@ func NormalizeIP(addr string, subnetLimit bool) string {
 		}
 	}
 	return ip.String()
+}
+
+// HashIP returns the HMAC-SHA256 hex digest of the raw IP under the given salt.
+// It is used as the ban / offense key so a leaked store dump reveals nothing
+// about who was banned. The raw IP is never stored as a key.
+func HashIP(ip, salt string) string {
+	mac := hmac.New(sha256.New, []byte(salt))
+	mac.Write([]byte(ip))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// SubnetOf returns the canonical subnet prefix for an IP: IPv6 /64 (first 64
+// bits), IPv4 /24 (first 24 bits). Returns "" for unparseable input.
+func SubnetOf(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if i := strings.IndexByte(addr, '%'); i >= 0 {
+		addr = addr[:i]
+	}
+	parsed := net.ParseIP(addr)
+	if parsed == nil {
+		return ""
+	}
+	if v4 := parsed.To4(); v4 != nil {
+		return v4.Mask(net.CIDRMask(24, 32)).String() + "/24"
+	}
+	v6 := parsed.To16()
+	// Zero out the lower 64 bits to form the /64 prefix.
+	for i := 8; i < 16; i++ {
+		v6[i] = 0
+	}
+	return v6.String() + "/64"
+}
+
+// MaskIP returns a display-only masked form of the IP. It is never used as a
+// key. IPv4 shows the first three octets (a.b.c.***); IPv6 keeps the /48 prefix
+// (first three hextets) and masks the remaining five hextets.
+func MaskIP(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if i := strings.IndexByte(addr, '%'); i >= 0 {
+		addr = addr[:i]
+	}
+	parsed := net.ParseIP(addr)
+	if parsed == nil {
+		return "***.***.***.***"
+	}
+	if v4 := parsed.To4(); v4 != nil {
+		return v4.String()[:len(v4.String())-1] + "***"
+	}
+	v6 := parsed.To16()
+	groups := strings.Split(v6.String(), ":")
+	if len(groups) >= 3 {
+		return groups[0] + ":" + groups[1] + ":" + groups[2] + "::****:****:****:****"
+	}
+	return v6.String()
+}
+
+// DeviceHash returns a stable FNV-1a (32-bit) fingerprint over the request's
+// ambient headers (User-Agent, Accept-Language, country, colo). It groups
+// requests sharing the same browser/OS/language/region — the granularity wanted
+// for a device ban — and never derives from a raw IP.
+func DeviceHash(ua, acceptLang, country, colo string) string {
+	h := fnv.New32a()
+	h.Write([]byte(ua + "|" + acceptLang + "|" + country + "|" + colo))
+	return hex.EncodeToString(h.Sum(nil))
 }
