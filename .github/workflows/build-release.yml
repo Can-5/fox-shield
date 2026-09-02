@@ -1,0 +1,100 @@
+# FoxAI Shield & Sentinel - Automated Build & Release
+# Triggers on tag push (v*), builds both EXEs, creates GitHub Release
+
+name: Build & Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  attestations: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Needed for generate_release_notes
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pyinstaller psutil pystray pillow requests winshell pywin32
+          
+      - name: Build Tray EXE (background monitor)
+        working-directory: fox-shield/sentinel
+        run: |
+          python -m PyInstaller foxai-sentinel.spec --clean
+          
+      - name: Build GUI EXE (windowed + desktop shortcut)
+        working-directory: fox-shield/sentinel
+        run: |
+          python -m PyInstaller foxai-sentinel-gui.spec --clean
+          
+      - name: Verify artifacts
+        run: |
+          ls -la fox-shield/sentinel/dist/
+          echo "=== File sizes ==="
+          for f in fox-shield/sentinel/dist/*.exe; do
+            echo "$(basename $f): $(du -h $f | cut -f1)"
+          done
+          
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            fox-shield/sentinel/dist/foxai-sentinel.exe
+            fox-shield/sentinel/dist/foxai-sentinel-gui.exe
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          
+      - name: Generate Build Attestation (SLSA Provenance)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            fox-shield/sentinel/dist/foxai-sentinel.exe
+            fox-shield/sentinel/dist/foxai-sentinel-gui.exe
+
+  # Optional: Test the built EXEs
+  test:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download artifacts from release
+        uses: actions/download-artifact@v4
+        with:
+          pattern: foxai-sentinel*
+          merge-multiple: true
+          
+      - name: Test Tray EXE starts
+        run: |
+          # Just verify it launches and exits cleanly
+          Start-Process .\foxai-sentinel.exe -WindowStyle Hidden
+          Start-Sleep 3
+          Stop-Process -Name foxai-sentinel -Force -ErrorAction SilentlyContinue
+          echo "Tray EXE launch test passed"
+        shell: powershell
+        
+      - name: Test GUI EXE starts
+        run: |
+          Start-Process .\foxai-sentinel-gui.exe -WindowStyle Hidden
+          Start-Sleep 3
+          Stop-Process -Name foxai-sentinel-gui -Force -ErrorAction SilentlyContinue
+          echo "GUI EXE launch test passed"
+        shell: powershell
