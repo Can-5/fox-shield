@@ -1,0 +1,83 @@
+name: Fix foxai.dev DNS (SPF + DMARC)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fix-dns:
+    runs-on: ubuntu-latest
+    env:
+      CF_API: https://api.cloudflare.com/client/v4
+      CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      ZONE_NAME: foxai.dev
+    steps:
+      - name: Resolve zone ID for foxai.dev
+        id: zone
+        run: |
+          resp=$(curl -sS -H "Authorization: Bearer $CF_TOKEN" "$CF_API/zones?name=$ZONE_NAME&account.id=$CF_ACCOUNT")
+          echo "$resp" | jq .
+          zone_id=$(echo "$resp" | jq -r '.result[0].id // empty')
+          if [ -z "$zone_id" ]; then
+            echo "::error::foxai.dev zone not found (or token lacks zone read). Check CLOUDFLARE_API_TOKEN scope."
+            exit 1
+          fi
+          echo "zone_id=$zone_id" >> "$GITHUB_OUTPUT"
+
+      - name: Before - current DNS records
+        run: |
+          curl -sS -H "Authorization: Bearer $CF_TOKEN" \
+            "$CF_API/zones/${{ steps.zone.outputs.zone_id }}/dns_records?per_page=100" \
+            | jq -r '.result[] | "\(.type)\t\(.name)\t\(.content)"'
+
+      - name: Add SPF record (idempotent)
+        run: |
+          ZONE_ID=${{ steps.zone.outputs.zone_id }}
+          check() {
+            curl -sS -H "Authorization: Bearer $CF_TOKEN" \
+              "$CF_API/zones/$ZONE_ID/dns_records?type=$1&name=$2&content=$3" \
+              | jq -r '.result | length'
+          }
+          SPF_CONTENT="v=spf1 include:mail.google.com -all"
+          if [ "$(check TXT foxai.dev "$SPF_CONTENT")" != "0" ]; then
+            echo "SKIP: SPF already present"
+          else
+            echo "ADD: SPF -> $SPF_CONTENT"
+            resp=$(curl -sS -X POST \
+              -H "Authorization: Bearer $CF_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"type\":\"TXT\",\"name\":\"foxai.dev\",\"content\":\"$SPF_CONTENT\",\"ttl\":1}" \
+              "$CF_API/zones/$ZONE_ID/dns_records")
+            echo "$resp" | jq .
+            echo "$resp" | jq -e '.success' >/dev/null || { echo "::error::failed to add SPF"; exit 1; }
+          fi
+
+      - name: Add DMARC record (idempotent)
+        run: |
+          ZONE_ID=${{ steps.zone.outputs.zone_id }}
+          DMARC_CONTENT="v=DMARC1; p=quarantine; rua=mailto:foxaibrowsersuppport@gmail.com; fo=1"
+          existing=$(curl -sS -H "Authorization: Bearer $CF_TOKEN" \
+            "$CF_API/zones/$ZONE_ID/dns_records?type=TXT&name=_dmarc.foxai.dev" | jq -r '.result | length')
+          if [ "$existing" != "0" ]; then
+            echo "SKIP: _dmarc already exists:"
+            curl -sS -H "Authorization: Bearer $CF_TOKEN" \
+              "$CF_API/zones/$ZONE_ID/dns_records?type=TXT&name=_dmarc.foxai.dev" | jq -r '.result[].content'
+          else
+            echo "ADD: DMARC -> $DMARC_CONTENT"
+            resp=$(curl -sS -X POST \
+              -H "Authorization: Bearer $CF_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"type\":\"TXT\",\"name\":\"_dmarc.foxai.dev\",\"content\":\"$DMARC_CONTENT\",\"ttl\":1}" \
+              "$CF_API/zones/$ZONE_ID/dns_records")
+            echo "$resp" | jq .
+            echo "$resp" | jq -e '.success' >/dev/null || { echo "::error::failed to add DMARC"; exit 1; }
+          fi
+
+      - name: After - verify records
+        run: |
+          curl -sS -H "Authorization: Bearer $CF_TOKEN" \
+            "$CF_API/zones/${{ steps.zone.outputs.zone_id }}/dns_records?per_page=100" \
+            | jq -r '.result[] | "\(.type)\t\(.name)\t\(.content)"'
