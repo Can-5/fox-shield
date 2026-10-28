@@ -38,6 +38,10 @@ export const DEFAULT_WAF_RULES: WafRule[] = [
   { id: 'RCE-003', category: 'rce', regex: '(?i)(\\|\\s*(cat|nc|wget|curl|python|perl|php)\\b|;\\s*(cat|nc|wget|curl)\\b)' },
   { id: 'RCE-004', category: 'rce', regex: '(?i)(base64_decode\\s*\\(|eval\\s*\\(\\s*\\$|assert\\s*\\(\\s*\\$)' },
   { id: 'RCE-005', category: 'rce', regex: '(?i)(\\$\\{jndi:|log4shell|log4j)' },
+  // FoxGuard code-injection patterns
+  { id: 'RCE-FG-001', category: 'rce', regex: '(?i)(pickle\\.loads\\(|yaml\\.load\\(|__import__\\()' },
+  { id: 'RCE-FG-002', category: 'rce', regex: '(?i)(reverse\\s+shell|chmod\\s+777|rm\\s+-rf\\s+/)' },
+  { id: 'RCE-FG-003', category: 'rce', regex: '(?i)(os\\.system\\(|subprocess\\.(run|call|Popen)\\()' },
   // Path Traversal
   { id: 'TRAV-001', category: 'traversal', regex: '(\\.\\./|\\.\\.\\\\|%2e%2e|%252e)' },
   { id: 'TRAV-002', category: 'traversal', regex: '(?i)(/etc/passwd|/etc/shadow|/proc/self|/windows/win\\.ini|/boot\\.ini)' },

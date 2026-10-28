@@ -49,6 +49,10 @@ var DefaultRules = []Rule{
 	{ID: "RCE-003", Category: "rce", Regex: `(?i)(\|\s*(cat|nc|wget|curl|python|perl|php)\b|;\s*(cat|nc|wget|curl)\b)`},
 	{ID: "RCE-004", Category: "rce", Regex: `(?i)(base64_decode\s*\(|eval\s*\(\s*\$|assert\s*\(\s*\$)`},
 	{ID: "RCE-005", Category: "rce", Regex: `(?i)(\$\{jndi:|log4shell|log4j)`},
+	// FoxGuard code-injection patterns
+	{ID: "RCE-FG-001", Category: "rce", Regex: `(?i)(pickle\.loads\(|yaml\.load\(|__import__\()`},
+	{ID: "RCE-FG-002", Category: "rce", Regex: `(?i)(reverse\s+shell|chmod\s+777|rm\s+-rf\s+/)`},
+	{ID: "RCE-FG-003", Category: "rce", Regex: `(?i)(os\.system\(|subprocess\.(run|call|Popen)\()`},
 	// Path Traversal
 	{ID: "TRAV-001", Category: "traversal", Regex: `(\.\./|\.\.\\|%2e%2e|%252e)`},
 	{ID: "TRAV-002", Category: "traversal", Regex: `(?i)(/etc/passwd|/etc/shadow|/proc/self|/windows/win\.ini|/boot\.ini)`},
